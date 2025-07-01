@@ -1,1 +1,1 @@
-# JustPOS
+# JustPOS Backend
