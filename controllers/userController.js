@@ -183,5 +183,14 @@ const changePassword = async (req, res) => {
     }
 }
 
+const fetchUsers = async (req, res) => {
+    try {
+        const users = await userModel.find({});
+        res.json({ success: true, users: users });
+    } catch (error) {
+        console.log("Error fetching users: ", error);
+        res.json({ success: false, message: "Error fetching users" });
+    }
+}
 
-export { loginUser, registerUser, updateUserStatus, editUser, deleteUser, changePassword };
+export { loginUser, registerUser, updateUserStatus, editUser, deleteUser, changePassword, fetchUsers };
