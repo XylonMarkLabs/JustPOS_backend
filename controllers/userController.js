@@ -30,7 +30,7 @@ const loginUser = async (req, res) => {
         user.lastLogin = localTime;
         await user.save();
 
-        res.json({ success: true, token: token });
+        res.json({ success: true, token: token, username: username });
 
     } catch (error) {
         console.error(error);
@@ -193,4 +193,19 @@ const fetchUsers = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, updateUserStatus, editUser, deleteUser, changePassword, fetchUsers };
+const getUserById = async (req, res) => {
+    console.log(req);
+    const { id } = req.body;
+    try {
+        const user = await userModel.findById(id);
+        if (!user) {    
+            return res.json({ success: false, message: "User not found" });
+        }
+        res.json({ success: true, user: user });
+    } catch (error) {
+        console.error("Error fetching user by ID: ", error);
+        res.json({ success: false, message: "Error fetching user" });
+    }
+}
+
+export { loginUser, registerUser, updateUserStatus, editUser, deleteUser, changePassword, fetchUsers, getUserById };
