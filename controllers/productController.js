@@ -6,13 +6,10 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      brand,
       description,
-      costPrice,
       sellingPrice,
       quantityInStock,
-      minStockLevel,
-      imageURL
+      minStock,
     } = req.body;
 
     // Check for existing productCode
@@ -25,18 +22,15 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      brand,
       description,
-      costPrice,
       sellingPrice,
       quantityInStock,
-      minStockLevel,
-      imageURL
+      minStock,
     });
 
     await newProduct.save();
 
-    res.status(201).json({ sucess: true,  message: 'Product added successfully', product: newProduct });
+    res.status(201).json({ success: true,  message: 'Product added successfully', product: newProduct });
 
   } catch (error) {
     console.error('Error adding product:', error);
@@ -50,29 +44,21 @@ const editProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      brand,
-      description,
-      costPrice,
       sellingPrice,
       quantityInStock,
-      minStockLevel,
-      imageURL
+      minStock,
     } = req.body;
 
     // Check for existing productCode
-    await productModel.findOneAndUpdate({ productCode: productCode}, {
+    await productModel.findOneAndUpdate({ productCode: productCode}, {  
       productName: productName,
       category: category,
-      brand: brand,
-      description: description,
-      costPrice: costPrice,
       sellingPrice: sellingPrice,
       quantityInStock: quantityInStock,
-      minStockLevel: minStockLevel,
-      imageURL: imageURL
+      minStock: minStock,
     })
 
-    res.status(201).json({ sucess: true,  message: 'Product edited successfully' });
+    res.status(201).json({ success: true,  message: 'Product edited successfully' });
 
   } catch (error) {
     console.error('Error editing product:', error);
@@ -126,4 +112,22 @@ const updateStockLevel = async (req, res) => {
   }
 }
 
-export { addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel };
+const deleteProduct = async (req, res) => {
+  try {
+    const { productCode } = req.body;
+
+    const product = await productModel.findOneAndDelete({ productCode });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    res.status(200).json({ success: true, message: 'Product deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ success: false, message: 'Server error while deleting product' });
+  }
+}
+
+export { addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct };

@@ -24,7 +24,7 @@ const loginUser = async (req, res) => {
             return res.json({ success: false, message: "Invalid username or password" })
         }
 
-        const token = createToken(user._id);
+        const token = createToken(user._id, user.username);
         const date = new Date();
         const localTime = date.toLocaleString();
         user.lastLogin = localTime;
@@ -38,8 +38,8 @@ const loginUser = async (req, res) => {
     }
 }
 
-const createToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET)
+const createToken = (id, username) => {
+    return jwt.sign({ id: id, username: username }, process.env.JWT_SECRET, { expiresIn: '1d' });
 }
 
 // register user
