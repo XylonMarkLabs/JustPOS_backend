@@ -44,7 +44,7 @@ const createToken = (id, username) => {
 
 // register user
 const registerUser = async (req, res) => {
-    const { firstname, lastname, username, email, role, password } = req.body;
+    const { name, username, email, role, password } = req.body;
     try {
         // checking is user already exists
         const exists = await userModel.findOne({ email });
@@ -67,8 +67,7 @@ const registerUser = async (req, res) => {
         const hashedPassword = await bycrypt.hash(password, salt);
 
         const newUser = new userModel({
-            firstname: firstname,
-            lastname: lastname,
+            name: name,
             username: username,
             email: email,
             role: role,
@@ -108,21 +107,46 @@ const updateUserStatus = async (req, res) => {
 // edit user details
 const editUser = async (req, res) => {
     try {
-        const { username } = req.body;
+        const { username, name, email, role, password } = req.body;
 
         const user = await userModel.findOne({ username });
 
         if (!user) {
-            res.json({ success: false, message: "Invalid username" });
+            return res.json({ success: false, message: "Invalid username" });
         }
 
-        await userModel.findOneAndUpdate({ username: username }, { firstname: req.body.name, lastname: req.body.lastname, email: req.body.email, role: req.body.role })
-        res.json({ success: true, message: "User updated" })
+        const updateFields = {
+            name,
+            email,
+            role,
+        };
+
+        if (password) {
+            const validationError = passwordValidator(password);
+            if (validationError) {
+                return res.json({ success: false, message: validationError });
+            }
+
+            const salt = await bycrypt.genSalt(10);
+            const hashedPassword = await bycrypt.hash(password, salt);
+            updateFields.password = hashedPassword;
+        }
+
+        await userModel.findOneAndUpdate({ username }, updateFields);
+
+        res.json({
+            success: true,
+            message: password
+                ? "User updated with new password"
+                : "User updated successfully",
+        });
+
     } catch (error) {
-        console.error(error);
-        res.json({ success: false, message: "Error" });
+        console.error("Error updating user:", error);
+        res.status(500).json({ success: false, message: error.message });
     }
-}
+};
+
 
 // delete user account
 const deleteUser = async (req, res) => {
@@ -194,7 +218,6 @@ const fetchUsers = async (req, res) => {
 }
 
 const getUserById = async (req, res) => {
-    console.log(req);
     const { id } = req.body;
     try {
         const user = await userModel.findById(id);
