@@ -43,6 +43,7 @@ const checkoutCartCash = async (req, res) => {
     await cart.save();
 
     res.status(200).json({
+      success: true,
       message: 'Checkout successful. Order saved.',
       orderId: newOrder._id,
       bill: {
@@ -53,7 +54,7 @@ const checkoutCartCash = async (req, res) => {
 
   } catch (error) {
     console.error('Error during checkout:', error);
-    res.status(500).json({ message: 'Server error during checkout' });
+    res.status(500).json({ success: false, message: 'Server error during checkout' });
   }
 };
 
@@ -61,10 +62,10 @@ const getAllOrders = async (req, res) => {
   try {
     const orders = await orderModel.find().sort({ createdAt: -1 });
 
-    res.status(200).json({ orders });
+    res.status(200).json({ success: true, orders: orders });
   } catch (error) {
     console.error('Error fetching all orders:', error);
-    res.status(500).json({ message: 'Server error while fetching orders' });
+    res.status(500).json({ success: false, message: 'Server error while fetching orders' });
   }
 };
 
