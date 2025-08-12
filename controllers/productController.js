@@ -10,6 +10,7 @@ const addProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      discount
     } = req.body;
 
     // Check for existing productCode
@@ -26,6 +27,7 @@ const addProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      discount,
     });
 
     await newProduct.save();
@@ -47,6 +49,7 @@ const editProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      discount
     } = req.body;
 
     // Check for existing productCode
@@ -56,7 +59,8 @@ const editProduct = async (req, res) => {
       sellingPrice: sellingPrice,
       quantityInStock: quantityInStock,
       minStock: minStock,
-    })
+      discount: discount
+    });
 
     res.status(201).json({ success: true,  message: 'Product edited successfully' });
 
