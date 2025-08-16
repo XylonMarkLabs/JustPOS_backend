@@ -12,6 +12,8 @@ const productSchema = new mongoose.Schema({
 
     quantityInStock: { type: Number, default: 0 },
     minStock: { type: Number, default: 0 },
+    imageURL: { type: String },
+    imagePublicId : { type: String },
 
     status: { type: Number, default: 1 },
 }, { timestamps: true });
