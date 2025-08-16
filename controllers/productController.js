@@ -1,3 +1,4 @@
+import { deleteImage } from "../config/cloudinary.js";
 import productModel from "../models/productModel.js";
 
 const addProduct = async (req, res) => {
@@ -10,6 +11,8 @@ const addProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      imageURL,
+      imagePublicId,
       discount
     } = req.body;
 
@@ -27,12 +30,14 @@ const addProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      imageURL,
+      imagePublicId,
       discount,
     });
 
     await newProduct.save();
 
-    res.status(201).json({ success: true,  message: 'Product added successfully', product: newProduct });
+    res.status(201).json({ success: true, message: 'Product added successfully', product: newProduct });
 
   } catch (error) {
     console.error('Error adding product:', error);
@@ -49,20 +54,24 @@ const editProduct = async (req, res) => {
       sellingPrice,
       quantityInStock,
       minStock,
+      imageURL,
+      imagePublicId,
       discount
     } = req.body;
 
     // Check for existing productCode
-    await productModel.findOneAndUpdate({ productCode: productCode}, {  
+    await productModel.findOneAndUpdate({ productCode: productCode }, {
       productName: productName,
       category: category,
       sellingPrice: sellingPrice,
       quantityInStock: quantityInStock,
       minStock: minStock,
+      imageURL: imageURL,
+      imagePublicId: imagePublicId,
       discount: discount
     });
 
-    res.status(201).json({ success: true,  message: 'Product edited successfully' });
+    res.status(201).json({ success: true, message: 'Product edited successfully' });
 
   } catch (error) {
     console.error('Error editing product:', error);
@@ -106,13 +115,13 @@ const updateStockLevel = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    await productModel.findOneAndUpdate({ productCode: productCode }, {  quantityInStock: product.quantityInStock + quantity });
+    await productModel.findOneAndUpdate({ productCode: productCode }, { quantityInStock: product.quantityInStock + quantity });
     res.status(200).json({ success: true, message: 'Stock level updated successfully' });
 
   } catch (error) {
     console.error('Error updating stock level:', error);
     res.status(500).json({ success: false, message: 'Server error while updating stock level' });
-    
+
   }
 }
 
@@ -120,11 +129,24 @@ const deleteProduct = async (req, res) => {
   try {
     const { productCode } = req.body;
 
-    const product = await productModel.findOneAndDelete({ productCode });
+    // Find the product first
+    const product = await productModel.findOne({ productCode });
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+
+    // Delete associated image from Cloudinary if exists
+    if (product.imagePublicId) {
+      const deleteResult = await deleteImage(product.imagePublicId);
+
+      if (deleteResult.error) {
+        console.error('Error deleting image from Cloudinary:', deleteResult.error);
+      }
+    }
+
+    // Delete the product from DB
+    await productModel.findOneAndDelete({ productCode });
 
     res.status(200).json({ success: true, message: 'Product deleted successfully' });
 
@@ -132,6 +154,19 @@ const deleteProduct = async (req, res) => {
     console.error('Error deleting product:', error);
     res.status(500).json({ success: false, message: 'Server error while deleting product' });
   }
+};
+
+const deleteImageFromCloudinary = async (req, res) => {
+  const { publicId } = req.body;
+
+  const result = await deleteImage(publicId)
+
+  if (result.success === false) {
+    return res.status(500).json({ error: result.error || result.message });
+  }
+
+  return res.status(200).json({ success: true, message: result.message });
+
 }
 
-export { addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct };
+export { addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };

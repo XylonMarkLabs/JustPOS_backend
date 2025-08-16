@@ -170,7 +170,7 @@ const deleteUser = async (req, res) => {
 }
 
 const changePassword = async (req, res) => {
-    const { username, oldpassword, newpassword, newpassword2 } = req.body;
+    const { username, oldPassword, newPassword, confirmPassword } = req.body;
 
     const user = await userModel.findOne({ username });
 
@@ -179,23 +179,23 @@ const changePassword = async (req, res) => {
             return res.json({ success: false, message: "Invalid username" });
         }
 
-        const isMatch = await bycrypt.compare(oldpassword, user.password);
+        const isMatch = await bycrypt.compare(oldPassword, user.password);
         if (!isMatch) {
             return res.json({ success: false, message: "Invalid password" });
         }
 
-        if (newpassword !== newpassword2) {
+        if (newPassword !== confirmPassword) {
             return res.json({ success: false, message: "New passwords do not match" });
         }
 
-        const validationError = passwordValidator(newpassword);
+        const validationError = passwordValidator(newPassword);
         if (validationError) {
             return res.json({ success: false, message: validationError });
         }
 
         // Update the password
         const salt = await bycrypt.genSalt(10);
-        const hashedPassword = await bycrypt.hash(newpassword, salt);
+        const hashedPassword = await bycrypt.hash(newPassword, salt);
         user.password = hashedPassword;
         await user.save();
 

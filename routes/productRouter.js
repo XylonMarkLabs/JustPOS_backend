@@ -1,5 +1,5 @@
 import express from 'express';
-import { addProduct, deleteProduct, editProduct, getProducts, updateProductStatus, updateStockLevel } from '../controllers/productController.js';
+import { addProduct, deleteImageFromCloudinary, deleteProduct, editProduct, getProducts, updateProductStatus, updateStockLevel } from '../controllers/productController.js';
 
 const productRouter = express.Router();
 
@@ -9,5 +9,6 @@ productRouter.post('/update-status', updateProductStatus);
 productRouter.get('/get-all', getProducts);
 productRouter.post('/update-stock', updateStockLevel);
 productRouter.post('/delete', deleteProduct);
+productRouter.post('/deleteImage', deleteImageFromCloudinary);
 
 export default productRouter;
