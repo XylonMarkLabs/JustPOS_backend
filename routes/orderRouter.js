@@ -1,9 +1,9 @@
 import express from 'express';
-import { checkoutCartCash, getAllOrders } from '../controllers/orderController.js';
+import { checkoutCart, getAllOrders } from '../controllers/orderController.js';
 
 const orderRouter = express.Router();
 
-orderRouter.post('/checkoutCash', checkoutCartCash);
+orderRouter.post('/checkout', checkoutCart);
 orderRouter.get('/getAll', getAllOrders);
 
 export default orderRouter;

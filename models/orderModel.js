@@ -15,8 +15,11 @@ const orderSchema = new mongoose.Schema({
   orderId: { type: Number, unique: true },
   username: { type: String, required: true },
   items: [orderItemSchema],
-  payment: { type: String, required: true },
+  paymentMethod: { type: String, required: true },
+  cashReceived: { type: Number },
+  changeGiven: { type: Number },
   totalAmount: { type: Number, required: true },
+  discount: { type: Number, default: 0 },
   date: { type: Date, default: Date.now }
 });
 

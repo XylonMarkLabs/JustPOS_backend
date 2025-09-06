@@ -2,55 +2,54 @@ import cartModel from "../models/cartModel.js";
 import orderModel from "../models/orderModel.js";
 import productModel from "../models/productModel.js";
 
-const checkoutCartCash = async (req, res) => {
+const checkoutCart = async (req, res) => {
   try {
-    const { username } = req.body;
+    const { username, totalAmount, discount, paymentMethod, cashReceived, changeGiven } = req.body;
 
-    const cart = await cartModel.findOne({ username });
-    if (!cart || cart.items.length === 0) {
-      return res.status(400).json({ message: 'Cart is empty' });
+    // Fetch cart items for the user
+    const cartItems = await cartModel.find({ username });
+
+    if (cartItems.length === 0) {
+      return res.status(400).json({ success: false, message: 'Cart is empty' });
     }
 
-    let totalAmount = 0;
-    let billItems = [];
-
-    for (let item of cart.items) {
-      const product = await productModel.findOne({ productCode: item.productCode });
-      const price = product?.sellingPrice || 0;
-      const subtotal = price * item.quantity;
-
-      billItems.push({
+    const items = cartItems.flatMap(cart =>
+      cart.items.map(item => ({
         productCode: item.productCode,
-        name: product?.productName || 'Unknown',
         quantity: item.quantity,
-        price,
-        subtotal
-      });
+        price: item.unitPrice,
+        subtotal: item.quantity * item.unitPrice
+      }))
+    );
 
-      totalAmount += subtotal;
-    }
-
-    // Save order
+    // Create a new order
     const newOrder = new orderModel({
       username,
-      items: billItems,
-      totalAmount
+      items,
+      totalAmount,
+      discount,
+      paymentMethod,
+      cashReceived: paymentMethod === 'cash' ? cashReceived : null,
+      changeGiven: paymentMethod === 'cash' ? changeGiven : null
     });
+
     await newOrder.save();
 
-    // Clear the cart
-    cart.items = [];
-    await cart.save();
-
-    res.status(200).json({
-      success: true,
-      message: 'Checkout successful. Order saved.',
-      orderId: newOrder._id,
-      bill: {
-        items: billItems,
-        total: totalAmount
+    // Update stock for each item in the order
+    for (const item of items) {
+      const product = await productModel.findOne({ productCode: item.productCode });
+      if (product) {
+        product.quantityInStock -= item.quantity;
+        await product.save();
+      } else {
+        console.warn(`Product with code ${item.productCode} not found`);
       }
-    });
+    }
+
+    // Clear the user's cart
+    await cartModel.deleteMany({ username });
+
+    res.status(200).json({ success: true, message: 'Order placed successfully', order: newOrder });
 
   } catch (error) {
     console.error('Error during checkout:', error);
@@ -70,4 +69,4 @@ const getAllOrders = async (req, res) => {
 };
 
 
-export { checkoutCartCash, getAllOrders };
+export { checkoutCart, getAllOrders };
