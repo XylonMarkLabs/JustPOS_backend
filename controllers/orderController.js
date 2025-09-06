@@ -15,6 +15,7 @@ const checkoutCart = async (req, res) => {
 
     const items = cartItems.flatMap(cart =>
       cart.items.map(item => ({
+        name: item.name,
         productCode: item.productCode,
         quantity: item.quantity,
         price: item.unitPrice,

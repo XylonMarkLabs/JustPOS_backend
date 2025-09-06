@@ -12,7 +12,8 @@ const cartItemSchema = new mongoose.Schema({
   unitPrice: {
     type: Number,
     required: true
-  }
+  },
+  name: { type: String, required: true }
 });
 
 const cartSchema = new mongoose.Schema({
