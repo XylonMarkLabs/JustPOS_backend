@@ -8,6 +8,10 @@ const cartItemSchema = new mongoose.Schema({
   quantity: {
     type: Number,
     default: 1
+  },
+  unitPrice: {
+    type: Number,
+    required: true
   }
 });
 

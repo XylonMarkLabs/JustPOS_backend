@@ -19,7 +19,7 @@ const addToCart = async (req, res) => {
       // Create new cart
       cart = new cartModel({
         username,
-        items: [{ productCode, quantity: 1 }]
+        items: [{ productCode, quantity: 1, unitPrice: product.sellingPrice }]
       });
     } else {
       // Check if product already in cart
@@ -30,7 +30,7 @@ const addToCart = async (req, res) => {
         cart.items[itemIndex].quantity += 1;
       } else {
         // Add new product to cart
-        cart.items.push({ productCode, quantity: 1 });
+        cart.items.push({ productCode, quantity: 1, unitPrice: product.sellingPrice });
       }
     }
 
