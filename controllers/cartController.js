@@ -1,7 +1,6 @@
 import cartModel from "../models/cartModel.js";
 import productModel from "../models/productModel.js";
 
-
 const addToCart = async (req, res) => {
   try {
     const { username, productCode } = req.body;
@@ -19,7 +18,7 @@ const addToCart = async (req, res) => {
       // Create new cart
       cart = new cartModel({
         username,
-        items: [{ productCode, quantity: 1, unitPrice: product.sellingPrice }]
+        items: [{ productCode, quantity: 1, unitPrice: product.sellingPrice, name: product.productName }]
       });
     } else {
       // Check if product already in cart
@@ -30,7 +29,7 @@ const addToCart = async (req, res) => {
         cart.items[itemIndex].quantity += 1;
       } else {
         // Add new product to cart
-        cart.items.push({ productCode, quantity: 1, unitPrice: product.sellingPrice });
+        cart.items.push({ productCode, quantity: 1, unitPrice: product.sellingPrice, name: product.productName });
       }
     }
 
