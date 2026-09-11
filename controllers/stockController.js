@@ -236,14 +236,26 @@ const getStocks = async (req, res) => {
             items: itemsByStockId.get(stock.stockId) || []
         }));
 
-        console.log("Stocks With Items: ", stocksWithItems)
-
         res.status(200).json({ success: true, stocks: stocksWithItems });
     } catch (error) {
         console.error('Error fetching stock records:', error);
         res.status(500).json({ success: false, message: 'Server error while fetching stock records' });
     }
 };
+
+const getStockByProduct = async (req, res) => {
+    try {
+        const { productId } = req.body;
+        
+        const stockItems = await stockItemModel.find({ productId: productId }).lean();
+
+        res.status(200).json({ success: true, items: stockItems });
+
+    } catch (error) {
+        console.error('Error fetching stock by product:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching stock by product' });
+    }
+}
 
 // const deleteStock = async (req, res) => {
 //     try {
@@ -267,4 +279,4 @@ const getStocks = async (req, res) => {
 //     }
 // };
 
-export { addStock, editStock, getStocks };
+export { addStock, editStock, getStocks, getStockByProduct };
