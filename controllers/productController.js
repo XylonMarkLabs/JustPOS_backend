@@ -1,5 +1,170 @@
+import mongoose from "mongoose";
 import { deleteImage } from "../config/cloudinary.js";
 import productModel from "../models/productModel.js";
+import stockItemModel from "../models/stockItemModal.js";
+import discountModel from "../models/discountModel.js";
+
+const getProductsCashier = async (req, res) => {
+    try {
+        // Only batches that still have stock available to sell
+        const stockItems = await stockItemModel
+            .find({ quantityRemaining: { $gt: 0 } })
+            .lean();
+
+        // discountModel.stockItemId is stored as a String, so compare as
+        // strings — an ObjectId array in $in won't match String values at
+        // the BSON level even when the hex looks identical.
+        const stockItemIds = stockItems.map((item) => String(item._id));
+
+        // Active discounts for these batches. Assumes at most one active
+        // discount per stockItemId at a time (enforced by the overlap check
+        // in addDiscount/editDiscount). If discounts can go stale between
+        // your cron/expiry pass and this read, add the same
+        // startDate/endDate window check here as a belt-and-braces guard —
+        // already included below.
+        const now = new Date();
+        const activeDiscounts = await discountModel
+            .find({
+                stockItemId: { $in: stockItemIds },
+                status: 'active',
+                startDate: { $lte: now },
+                endDate: { $gte: now },
+                remainingQuantity: { $gt: 0 },
+            })
+            .lean();
+
+        const discountByStockItem = new Map();
+        activeDiscounts.forEach((discount) => {
+            discountByStockItem.set(String(discount.stockItemId), discount);
+        });
+
+        // Group batches by product + effective selling price. A batch that's
+        // only partially covered by a discount is split into a discounted
+        // portion and a full-price portion, rather than merged into one
+        // ambiguous price.
+        //
+        // A single grouped row can still be backed by multiple physical
+        // batches (e.g. two non-discounted stock items for the same product
+        // that happen to share a selling price), so each group tracks the
+        // stockItemId + quantity of every batch feeding into it. The order
+        // controller needs this to know exactly which batch(es) to decrement
+        // when the cashier sells from this row — it can't assume one
+        // stockItemId per row.
+        const grouped = new Map();
+
+        const addToGroup = (key, base, stockItemId, qty) => {
+            if (qty <= 0) return;
+            if (!grouped.has(key)) {
+                grouped.set(key, { ...base, quantityAvailable: 0, stockItems: [] });
+            }
+            const group = grouped.get(key);
+            group.quantityAvailable += qty;
+            group.stockItems.push({ stockItemId, quantityAvailable: qty });
+        };
+
+        stockItems.forEach((item) => {
+            const stockItemId = String(item._id);
+            const discount = discountByStockItem.get(stockItemId);
+            const originalPrice = Number(item.sellingPrice);
+
+            if (!discount) {
+                const priceKey = originalPrice.toFixed(2);
+                addToGroup(`${item.productId}_${priceKey}`, {
+                    productId: item.productId,
+                    sellingPrice: originalPrice,
+                    originalPrice,
+                    discountId: null,
+                    discount: null,
+                }, stockItemId, item.quantityRemaining);
+                return;
+            }
+
+            const discountedQty = Math.min(item.quantityRemaining, discount.remainingQuantity);
+            const plainQty = item.quantityRemaining - discountedQty;
+
+            const discountedPrice = discount.discountType === 'percentage'
+                ? originalPrice - (originalPrice * discount.discountValue) / 100
+                : originalPrice - discount.discountValue;
+
+            // Keyed by discountId (not price) so each discount stays its own
+            // row even if, coincidentally, another batch's price matches.
+            // A discounted row is always backed by exactly one stockItemId,
+            // since a discount is scoped to a single batch.
+            addToGroup(`${item.productId}_disc_${discount.discountId}`, {
+                productId: item.productId,
+                sellingPrice: Math.max(discountedPrice, 0),
+                originalPrice,
+                discountId: discount.discountId,
+                discount: {
+                    discountId: discount.discountId,
+                    discountType: discount.discountType,
+                    discountValue: discount.discountValue,
+                },
+            }, stockItemId, discountedQty);
+
+            if (plainQty > 0) {
+                const priceKey = originalPrice.toFixed(2);
+                addToGroup(`${item.productId}_${priceKey}`, {
+                    productId: item.productId,
+                    sellingPrice: originalPrice,
+                    originalPrice,
+                    discountId: null,
+                    discount: null,
+                }, stockItemId, plainQty);
+            }
+        });
+
+        const groupedEntries = Array.from(grouped.values());
+
+        // Look up each product's base details (name, code, category, image...)
+        const productIds = [...new Set(groupedEntries.map((entry) => entry.productId))];
+        const objectIdCandidates = productIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+        const codeCandidates = productIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+
+        const products = await productModel.find({
+            $or: [
+                { _id: { $in: objectIdCandidates } },
+                { productCode: { $in: codeCandidates } }
+            ]
+        }).lean();
+
+        const productLookup = new Map();
+        products.forEach((product) => {
+            productLookup.set(String(product._id), product);
+            if (product.productCode) productLookup.set(product.productCode, product);
+        });
+
+        // Combine each grouped batch with its product's details. Skip
+        // batches whose product is missing, inactive, or has been deleted.
+        const cashierProducts = groupedEntries
+            .map((entry) => {
+                const product = productLookup.get(String(entry.productId));
+                if (!product) return null;
+                if (product.status !== 1) return null;
+
+                return {
+                    productId: entry.productId,
+                    productName: product.productName,
+                    productCode: product.productCode,
+                    category: product.category,
+                    imageURL: product.imageURL,
+                    sellingPrice: entry.sellingPrice,
+                    originalPrice: entry.originalPrice,
+                    discountId: entry.discountId,
+                    discount: entry.discount,
+                    stockItems: entry.stockItems,
+                    quantityAvailable: entry.quantityAvailable,
+                    minStock: product.minStock || 0,
+                };
+            })
+            .filter(Boolean);
+
+        res.status(200).json({ success: true, products: cashierProducts });
+    } catch (error) {
+        console.error('Error fetching products:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching products' });
+    }
+};
 
 const addProduct = async (req, res) => {
   try {
@@ -7,13 +172,9 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      description,
-      sellingPrice,
-      quantityInStock,
       minStock,
       imageURL,
       imagePublicId,
-      discount
     } = req.body;
 
     // Check for existing productCode
@@ -26,13 +187,9 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      description,
-      sellingPrice,
-      quantityInStock,
       minStock,
       imageURL,
       imagePublicId,
-      discount,
     });
 
     await newProduct.save();
@@ -51,8 +208,6 @@ const editProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      sellingPrice,
-      quantityInStock,
       minStock,
       imageURL,
       imagePublicId,
@@ -63,8 +218,6 @@ const editProduct = async (req, res) => {
     await productModel.findOneAndUpdate({ productCode: productCode }, {
       productName: productName,
       category: category,
-      sellingPrice: sellingPrice,
-      quantityInStock: quantityInStock,
       minStock: minStock,
       imageURL: imageURL,
       imagePublicId: imagePublicId,
@@ -169,4 +322,4 @@ const deleteImageFromCloudinary = async (req, res) => {
 
 }
 
-export { addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };
+export { getProductsCashier, addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };
