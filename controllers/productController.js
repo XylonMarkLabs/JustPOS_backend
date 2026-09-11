@@ -2,31 +2,116 @@ import mongoose from "mongoose";
 import { deleteImage } from "../config/cloudinary.js";
 import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
+import discountModel from "../models/discountModel.js";
 
-const getProductscashier = async (req, res) => {
+const getProductsCashier = async (req, res) => {
     try {
         // Only batches that still have stock available to sell
         const stockItems = await stockItemModel
             .find({ quantityRemaining: { $gt: 0 } })
             .lean();
 
-        // Group batches by product + selling price. Two rows for the same
-        // product at the same price become one cashier-facing entry (their
-        // quantities combined); a row at a different price stays separate,
-        // since the cashier needs to be able to pick which price to sell at.
-        const grouped = new Map();
-        stockItems.forEach((item) => {
-            const priceKey = Number(item.sellingPrice).toFixed(2);
-            const key = `${item.productId}_${priceKey}`;
+        // discountModel.stockItemId is stored as a String, so compare as
+        // strings — an ObjectId array in $in won't match String values at
+        // the BSON level even when the hex looks identical.
+        const stockItemIds = stockItems.map((item) => String(item._id));
 
+        // Active discounts for these batches. Assumes at most one active
+        // discount per stockItemId at a time (enforced by the overlap check
+        // in addDiscount/editDiscount). If discounts can go stale between
+        // your cron/expiry pass and this read, add the same
+        // startDate/endDate window check here as a belt-and-braces guard —
+        // already included below.
+        const now = new Date();
+        const activeDiscounts = await discountModel
+            .find({
+                stockItemId: { $in: stockItemIds },
+                status: 'active',
+                startDate: { $lte: now },
+                endDate: { $gte: now },
+                remainingQuantity: { $gt: 0 },
+            })
+            .lean();
+
+        const discountByStockItem = new Map();
+        activeDiscounts.forEach((discount) => {
+            discountByStockItem.set(String(discount.stockItemId), discount);
+        });
+
+        // Group batches by product + effective selling price. A batch that's
+        // only partially covered by a discount is split into a discounted
+        // portion and a full-price portion, rather than merged into one
+        // ambiguous price.
+        //
+        // A single grouped row can still be backed by multiple physical
+        // batches (e.g. two non-discounted stock items for the same product
+        // that happen to share a selling price), so each group tracks the
+        // stockItemId + quantity of every batch feeding into it. The order
+        // controller needs this to know exactly which batch(es) to decrement
+        // when the cashier sells from this row — it can't assume one
+        // stockItemId per row.
+        const grouped = new Map();
+
+        const addToGroup = (key, base, stockItemId, qty) => {
+            if (qty <= 0) return;
             if (!grouped.has(key)) {
-                grouped.set(key, {
-                    productId: item.productId,
-                    sellingPrice: Number(item.sellingPrice),
-                    quantityAvailable: 0,
-                });
+                grouped.set(key, { ...base, quantityAvailable: 0, stockItems: [] });
             }
-            grouped.get(key).quantityAvailable += item.quantityRemaining;
+            const group = grouped.get(key);
+            group.quantityAvailable += qty;
+            group.stockItems.push({ stockItemId, quantityAvailable: qty });
+        };
+
+        stockItems.forEach((item) => {
+            const stockItemId = String(item._id);
+            const discount = discountByStockItem.get(stockItemId);
+            const originalPrice = Number(item.sellingPrice);
+
+            if (!discount) {
+                const priceKey = originalPrice.toFixed(2);
+                addToGroup(`${item.productId}_${priceKey}`, {
+                    productId: item.productId,
+                    sellingPrice: originalPrice,
+                    originalPrice,
+                    discountId: null,
+                    discount: null,
+                }, stockItemId, item.quantityRemaining);
+                return;
+            }
+
+            const discountedQty = Math.min(item.quantityRemaining, discount.remainingQuantity);
+            const plainQty = item.quantityRemaining - discountedQty;
+
+            const discountedPrice = discount.discountType === 'percentage'
+                ? originalPrice - (originalPrice * discount.discountValue) / 100
+                : originalPrice - discount.discountValue;
+
+            // Keyed by discountId (not price) so each discount stays its own
+            // row even if, coincidentally, another batch's price matches.
+            // A discounted row is always backed by exactly one stockItemId,
+            // since a discount is scoped to a single batch.
+            addToGroup(`${item.productId}_disc_${discount.discountId}`, {
+                productId: item.productId,
+                sellingPrice: Math.max(discountedPrice, 0),
+                originalPrice,
+                discountId: discount.discountId,
+                discount: {
+                    discountId: discount.discountId,
+                    discountType: discount.discountType,
+                    discountValue: discount.discountValue,
+                },
+            }, stockItemId, discountedQty);
+
+            if (plainQty > 0) {
+                const priceKey = originalPrice.toFixed(2);
+                addToGroup(`${item.productId}_${priceKey}`, {
+                    productId: item.productId,
+                    sellingPrice: originalPrice,
+                    originalPrice,
+                    discountId: null,
+                    discount: null,
+                }, stockItemId, plainQty);
+            }
         });
 
         const groupedEntries = Array.from(grouped.values());
@@ -63,9 +148,13 @@ const getProductscashier = async (req, res) => {
                     productCode: product.productCode,
                     category: product.category,
                     imageURL: product.imageURL,
-                    discount: product.discount,
                     sellingPrice: entry.sellingPrice,
+                    originalPrice: entry.originalPrice,
+                    discountId: entry.discountId,
+                    discount: entry.discount,
+                    stockItems: entry.stockItems,
                     quantityAvailable: entry.quantityAvailable,
+                    minStock: product.minStock || 0,
                 };
             })
             .filter(Boolean);
@@ -233,4 +322,4 @@ const deleteImageFromCloudinary = async (req, res) => {
 
 }
 
-export { getProductscashier, addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };
+export { getProductsCashier, addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };
