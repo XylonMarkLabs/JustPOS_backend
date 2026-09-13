@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import cartModel from "../models/cartModel.js";
 import discountModel from "../models/discountModel.js";
 import orderModel from "../models/orderModel.js";
+import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
 
 const checkoutCart = async (req, res) => {
@@ -30,55 +31,98 @@ const checkoutCart = async (req, res) => {
       let totalDiscount = 0;
 
       for (const cartItem of cart.items) {
-        // Re-check stock at the moment of checkout, not just at
-        // add-to-cart time — someone else may have bought the last units
-        // in between. $inc with a quantityRemaining >= qty filter makes
-        // the decrement atomic: it either succeeds only if enough stock is
-        // still there, or matches nothing.
-        const stockUpdate = await stockItemModel.findOneAndUpdate(
-          { _id: cartItem.stockItemId, quantityRemaining: { $gte: cartItem.quantity } },
-          { $inc: { quantityRemaining: -cartItem.quantity } },
-          { session, new: true }
-        );
-
-        if (!stockUpdate) {
-          throw new Error(`Not enough stock left for "${cartItem.name}" — please review the cart`);
-        }
-
-        // The price the cart line was built with is trusted here (it was
-        // computed server-side back in addToCart), but the *discount*
-        // still needs re-validating and re-decrementing now, since it may
-        // have been edited, paused, or exhausted by another sale since
-        // this item was added to the cart.
+        let unitCost;
         let discountValue = 0;
 
-        if (cartItem.discountId) {
-          const now = new Date();
-          const discountUpdate = await discountModel.findOneAndUpdate(
-            {
-              discountId: cartItem.discountId,
-              stockItemId: String(cartItem.stockItemId),
-              status: 'active',
-              startDate: { $lte: now },
-              endDate: { $gte: now },
-              remainingQuantity: { $gte: cartItem.quantity },
-            },
-            { $inc: { remainingQuantity: -cartItem.quantity } },
+        if (cartItem.productType === 'NON_INVENTORY') {
+          // Made to order — nothing to decrement for stock. Confirm the
+          // product still exists and is active, and if a discount applied,
+          // re-validate and decrement it the same way the INVENTORY branch
+          // does for a stock item — just scoped by productId instead.
+          const product = await productModel.findOne({ _id: cartItem.productId }).session(session);
+
+          if (!product || product.status !== 1) {
+            throw new Error(`"${cartItem.name}" is no longer available — please remove it from the cart`);
+          }
+
+          unitCost = product.costPrice || 0;
+
+          if (cartItem.discountId) {
+            const now = new Date();
+            const discountUpdate = await discountModel.findOneAndUpdate(
+              {
+                discountId: cartItem.discountId,
+                productId: String(cartItem.productId),
+                stockItemId: null,
+                status: 'active',
+                startDate: { $lte: now },
+                endDate: { $gte: now },
+                remainingQuantity: { $gte: cartItem.quantity },
+              },
+              { $inc: { remainingQuantity: -cartItem.quantity } },
+              { session, new: true }
+            );
+
+            if (!discountUpdate) {
+              throw new Error(
+                `The discount on "${cartItem.name}" is no longer available — please refresh the cart`
+              );
+            }
+
+            discountValue = cartItem.originalPrice - cartItem.unitPrice;
+          }
+        } else {
+          // INVENTORY — unchanged: re-check stock at the moment of
+          // checkout, not just at add-to-cart time — someone else may have
+          // bought the last units in between. $inc with a
+          // quantityRemaining >= qty filter makes the decrement atomic: it
+          // either succeeds only if enough stock is still there, or
+          // matches nothing.
+          const stockUpdate = await stockItemModel.findOneAndUpdate(
+            { _id: cartItem.stockItemId, quantityRemaining: { $gte: cartItem.quantity } },
+            { $inc: { quantityRemaining: -cartItem.quantity } },
             { session, new: true }
           );
 
-          if (!discountUpdate) {
-            // Discount is no longer honourable (expired/paused/exhausted
-            // since it was added to the cart). Don't silently charge full
-            // price for something the cashier believes is discounted —
-            // fail the whole checkout so they can refresh and confirm
-            // with the customer.
-            throw new Error(
-              `The discount on "${cartItem.name}" is no longer available — please refresh the cart`
-            );
+          if (!stockUpdate) {
+            throw new Error(`Not enough stock left for "${cartItem.name}" — please review the cart`);
           }
 
-          discountValue = cartItem.originalPrice - cartItem.unitPrice;
+          unitCost = stockUpdate.unitCost;
+
+          // The price the cart line was built with is trusted here (it was
+          // computed server-side back in addToCart), but the *discount*
+          // still needs re-validating and re-decrementing now, since it may
+          // have been edited, paused, or exhausted by another sale since
+          // this item was added to the cart.
+          if (cartItem.discountId) {
+            const now = new Date();
+            const discountUpdate = await discountModel.findOneAndUpdate(
+              {
+                discountId: cartItem.discountId,
+                stockItemId: String(cartItem.stockItemId),
+                status: 'active',
+                startDate: { $lte: now },
+                endDate: { $gte: now },
+                remainingQuantity: { $gte: cartItem.quantity },
+              },
+              { $inc: { remainingQuantity: -cartItem.quantity } },
+              { session, new: true }
+            );
+
+            if (!discountUpdate) {
+              // Discount is no longer honourable (expired/paused/exhausted
+              // since it was added to the cart). Don't silently charge full
+              // price for something the cashier believes is discounted —
+              // fail the whole checkout so they can refresh and confirm
+              // with the customer.
+              throw new Error(
+                `The discount on "${cartItem.name}" is no longer available — please refresh the cart`
+              );
+            }
+
+            discountValue = cartItem.originalPrice - cartItem.unitPrice;
+          }
         }
 
         const lineSubtotal = cartItem.unitPrice * cartItem.quantity;
@@ -88,12 +132,13 @@ const checkoutCart = async (req, res) => {
         orderItems.push({
           productId: cartItem.productId,
           stockItemId: cartItem.stockItemId,
+          productType: cartItem.productType,
           productCode: cartItem.productCode,
           name: cartItem.name,
           quantity: cartItem.quantity,
           originalPrice: cartItem.originalPrice,
           unitPrice: cartItem.unitPrice,
-          unitCost: stockUpdate.unitCost,
+          unitCost,
           discountId: cartItem.discountId,
           discountType: cartItem.discountType,
           discountValue: cartItem.discountValue,

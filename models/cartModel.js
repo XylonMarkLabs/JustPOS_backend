@@ -3,7 +3,8 @@ import mongoose from 'mongoose';
 const cartItemSchema = new mongoose.Schema({
 
   productId: {type: mongoose.Schema.Types.ObjectId, ref: 'products', required: true},
-  stockItemId: {type: mongoose.Schema.Types.ObjectId, ref: 'stockItems', required: true},
+  stockItemId: {type: mongoose.Schema.Types.ObjectId, ref: 'stockItems', default: null},
+  productType: {type: String, enum: ['INVENTORY', 'NON_INVENTORY'], required: true},
   productCode: {type: String, required: true},
   name: {type: String, required: true},
   quantity: {type: Number, required: true, min: 1, default: 1},

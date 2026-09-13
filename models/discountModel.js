@@ -3,7 +3,7 @@ import mongoose from 'mongoose'
 const discountSchema = new mongoose.Schema({
     discountId: { type: String, required: true, unique: true },
     productId: { type: String, required: true },
-    stockItemId: { type: String, required: true },
+    stockItemId: { type: String, default: null },
     discountType: { type: String, required: true },
     discountValue: { type: Number, required: true },
     quantity: { type: Number, required: true },
