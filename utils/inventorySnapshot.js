@@ -2,9 +2,6 @@ import productModel from '../models/productModel.js'
 import stockItemModel from '../models/stockItemModal.js'
 
 export const computeInventorySnapshot = async () => {
-        // Current stock + cost value per product, summed across every batch
-        // (stockItem) that product has — this is the real source of truth now,
-        // not a denormalized count on the product itself.
     const stockAgg = await stockItemModel.aggregate([
         {
             $group: {
@@ -15,10 +12,6 @@ export const computeInventorySnapshot = async () => {
         },
     ])
 
-    // stockItem.productId may have been recorded as either the product's
-    // _id or its productCode (see getProductsCashier for the same
-    // ambiguity) — key the map by whatever string was actually stored, then
-    // check both possible keys per product below.
     const stockMap = new Map()
     stockAgg.forEach((entry) => {
         stockMap.set(String(entry._id), {
@@ -27,7 +20,7 @@ export const computeInventorySnapshot = async () => {
         })
     })
 
-    const products = await productModel.find({ status: 1 }).lean()
+    const products = await productModel.find({ status: 1, productType: 'INVENTORY' }).lean()
 
     const getStockFor = (product) => {
         const byId = stockMap.get(String(product._id))

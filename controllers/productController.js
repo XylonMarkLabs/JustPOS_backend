@@ -50,6 +50,11 @@ const getProductsCashier = async (req, res) => {
         // controller needs this to know exactly which batch(es) to decrement
         // when the cashier sells from this row — it can't assume one
         // stockItemId per row.
+        //
+        // NOTE: stock items only ever exist for INVENTORY products (nothing
+        // creates one for a NON_INVENTORY product), so this whole section
+        // naturally only ever touches INVENTORY products. NON_INVENTORY
+        // products are appended separately, below.
         const grouped = new Map();
 
         const addToGroup = (key, base, stockItemId, qty) => {
@@ -148,6 +153,7 @@ const getProductsCashier = async (req, res) => {
                     productCode: product.productCode,
                     category: product.category,
                     imageURL: product.imageURL,
+                    productType: product.productType,
                     sellingPrice: entry.sellingPrice,
                     originalPrice: entry.originalPrice,
                     discountId: entry.discountId,
@@ -159,7 +165,96 @@ const getProductsCashier = async (req, res) => {
             })
             .filter(Boolean);
 
-        res.status(200).json({ success: true, products: cashierProducts });
+        // NON_INVENTORY products (made-to-order — no stock batches exist for
+        // these at all): priced from product.sellingPrice, with an active
+        // discount (scoped by productId, stockItemId: null) applied the
+        // same way a batch discount would be. A product with an active
+        // discount that only covers PART of its remaining allotment (i.e.
+        // discount.remainingQuantity is capped, unlike the product itself
+        // which is unlimited) becomes two rows, same pattern as a
+        // partially-discounted stock batch: a discounted row capped at
+        // discount.remainingQuantity, and a full-price row with no cap for
+        // anything beyond that.
+        const nonInventoryProducts = await productModel
+            .find({ productType: 'NON_INVENTORY', status: 1 })
+            .lean();
+
+        const nonInventoryProductIds = nonInventoryProducts.map((p) => String(p._id));
+        const nonInventoryDiscounts = await discountModel
+            .find({
+                productId: { $in: nonInventoryProductIds },
+                stockItemId: null,
+                status: 'active',
+                startDate: { $lte: now },
+                endDate: { $gte: now },
+                remainingQuantity: { $gt: 0 },
+            })
+            .lean();
+
+        const discountByProduct = new Map();
+        nonInventoryDiscounts.forEach((discount) => {
+            discountByProduct.set(String(discount.productId), discount);
+        });
+
+        const nonInventoryCashierProducts = [];
+        nonInventoryProducts.forEach((product) => {
+            const discount = discountByProduct.get(String(product._id));
+            const originalPrice = Number(product.sellingPrice);
+
+            const baseEntry = {
+                productId: String(product._id),
+                productName: product.productName,
+                productCode: product.productCode,
+                category: product.category,
+                imageURL: product.imageURL,
+                productType: product.productType,
+                stockItems: [],
+                minStock: 0,
+            };
+
+            if (!discount) {
+                nonInventoryCashierProducts.push({
+                    ...baseEntry,
+                    sellingPrice: originalPrice,
+                    originalPrice,
+                    discountId: null,
+                    discount: null,
+                    quantityAvailable: null,
+                });
+                return;
+            }
+
+            const discountedPrice = discount.discountType === 'percentage'
+                ? originalPrice - (originalPrice * discount.discountValue) / 100
+                : originalPrice - discount.discountValue;
+
+            nonInventoryCashierProducts.push({
+                ...baseEntry,
+                sellingPrice: Math.max(discountedPrice, 0),
+                originalPrice,
+                discountId: discount.discountId,
+                discount: {
+                    discountId: discount.discountId,
+                    discountType: discount.discountType,
+                    discountValue: discount.discountValue,
+                },
+                quantityAvailable: discount.remainingQuantity,
+            });
+
+            nonInventoryCashierProducts.push({
+                ...baseEntry,
+                sellingPrice: originalPrice,
+                originalPrice,
+                discountId: null,
+                discount: null,
+                quantityAvailable: null,
+            });
+        });
+
+        res.status(200).json({
+            success: true,
+            products: [...cashierProducts, ...nonInventoryCashierProducts],
+        });
     } catch (error) {
         console.error('Error fetching products:', error);
         res.status(500).json({ success: false, message: 'Server error while fetching products' });
@@ -172,10 +267,21 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
+      productType,
+      taxRate,
       minStock,
+      sellingPrice,
+      costPrice,
       imageURL,
       imagePublicId,
     } = req.body;
+
+    if (!['INVENTORY', 'NON_INVENTORY'].includes(productType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'productType must be either "INVENTORY" or "NON_INVENTORY"',
+      });
+    }
 
     // Check for existing productCode
     const existingProduct = await productModel.findOne({ productCode });
@@ -187,7 +293,11 @@ const addProduct = async (req, res) => {
       productName,
       productCode,
       category,
-      minStock,
+      productType,
+      taxRate,
+      minStock: productType === 'INVENTORY' ? minStock : undefined,
+      sellingPrice: productType === 'NON_INVENTORY' ? sellingPrice : undefined,
+      costPrice: productType === 'NON_INVENTORY' ? costPrice : undefined,
       imageURL,
       imagePublicId,
     });
@@ -198,6 +308,12 @@ const addProduct = async (req, res) => {
 
   } catch (error) {
     console.error('Error adding product:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: Object.values(error.errors).map((e) => e.message).join(', '),
+      });
+    }
     res.status(500).json({ success: false, message: 'Server error while adding product' });
   }
 };
@@ -208,26 +324,63 @@ const editProduct = async (req, res) => {
       productName,
       productCode,
       category,
+      productType,
+      taxRate,
       minStock,
+      sellingPrice,
+      costPrice,
       imageURL,
       imagePublicId,
-      discount
     } = req.body;
 
-    // Check for existing productCode
-    await productModel.findOneAndUpdate({ productCode: productCode }, {
-      productName: productName,
-      category: category,
-      minStock: minStock,
-      imageURL: imageURL,
-      imagePublicId: imagePublicId,
-      discount: discount
-    });
+    const product = await productModel.findOne({ productCode });
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
 
-    res.status(201).json({ success: true, message: 'Product edited successfully' });
+    // Guard against orphaning stock: converting an INVENTORY product to
+    // NON_INVENTORY while it still has recorded batches would leave those
+    // StockItem rows referencing a product nothing in the UI treats as
+    // having stock anymore — not deleted, just invisible. Block the
+    // conversion instead of silently creating that inconsistency.
+    if (productType === 'NON_INVENTORY' && product.productType === 'INVENTORY') {
+      const hasStockItems = await stockItemModel.exists({
+        $or: [{ productId: String(product._id) }, { productId: product.productCode }],
+      });
+      if (hasStockItems) {
+        return res.status(400).json({
+          success: false,
+          message: 'This product still has stock batches recorded against it — cannot convert it to a non-inventory (made-to-order) product.',
+        });
+      }
+    }
+
+    if (productName !== undefined) product.productName = productName;
+    if (category !== undefined) product.category = category;
+    if (taxRate !== undefined) product.taxRate = taxRate;
+    if (imageURL !== undefined) product.imageURL = imageURL;
+    if (imagePublicId !== undefined) product.imagePublicId = imagePublicId;
+    if (productType !== undefined) product.productType = productType;
+    if (minStock !== undefined) product.minStock = minStock;
+    if (sellingPrice !== undefined) product.sellingPrice = sellingPrice;
+    if (costPrice !== undefined) product.costPrice = costPrice;
+
+    // .save() (not findOneAndUpdate) so the pre('validate') hook actually
+    // runs with the full, merged document — findOneAndUpdate's validators
+    // operate on the update payload in isolation and don't reliably see
+    // `this.productType` the way the conditional `required` function needs.
+    await product.save();
+
+    res.status(200).json({ success: true, message: 'Product edited successfully', product });
 
   } catch (error) {
     console.error('Error editing product:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: Object.values(error.errors).map((e) => e.message).join(', '),
+      });
+    }
     res.status(500).json({ success: false, message: 'Server error while editing product' });
   }
 };
@@ -260,12 +413,25 @@ const getProducts = async (req, res) => {
   }
 };
 
+// NOTE: with StockItem batches as the real source of truth
+// (computeInventorySnapshot sums quantityRemaining directly), this endpoint
+// no longer feeds anything else in the system — nothing reads
+// product.quantityInStock for actual stock decisions anymore. Worth
+// checking whether any frontend still calls this before removing it
+// entirely; left functional here, just guarded against NON_INVENTORY.
 const updateStockLevel = async (req, res) => {
   const { productCode, quantity } = req.body;
   try {
     const product = await productModel.findOne({ productCode: productCode });
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    if (product.productType !== 'INVENTORY') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only inventory products have a stock level to update',
+      });
     }
 
     await productModel.findOneAndUpdate({ productCode: productCode }, { quantityInStock: product.quantityInStock + quantity });

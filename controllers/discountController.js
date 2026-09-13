@@ -19,7 +19,14 @@ const computeStatus = (startDate, endDate, manualStatus) => {
     return 'active'
 }
 
-const validateDiscountPayload = ({ discountType, discountValue, quantity, startDate, endDate }, sellingPrice, availableQty) => {
+// referencePrice: the price a fixed discount is checked against (stock
+// item's price for INVENTORY, product's own price for NON_INVENTORY).
+// availableQty: an optional physical ceiling on `quantity` — only meaningful
+// for INVENTORY (can't discount more units than the batch has). Left
+// undefined for NON_INVENTORY, since a made-to-order item has no such
+// ceiling; `quantity` there just means "how many discounted servings to
+// offer," not a stock count.
+const validateDiscountPayload = ({ discountType, discountValue, quantity, startDate, endDate }, referencePrice, availableQty) => {
     const errors = []
 
     if (!['percentage', 'fixed'].includes(discountType)) {
@@ -31,7 +38,7 @@ const validateDiscountPayload = ({ discountType, discountValue, quantity, startD
     if (discountType === 'percentage' && (discountValue <= 0 || discountValue > 100)) {
         errors.push('percentage discountValue must be between 0 and 100')
     }
-    if (discountType === 'fixed' && sellingPrice !== undefined && discountValue >= sellingPrice) {
+    if (discountType === 'fixed' && referencePrice !== undefined && discountValue >= referencePrice) {
         errors.push('fixed discountValue must be less than the item\'s selling price')
     }
     if (typeof quantity !== 'number' || quantity <= 0) {
@@ -49,11 +56,12 @@ const validateDiscountPayload = ({ discountType, discountValue, quantity, startD
     return errors
 }
 
-// checks for another non-expired/inactive discount on the same stock item
-// whose date range overlaps the requested one
-const hasOverlappingDiscount = async (stockItemId, startDate, endDate, excludeDiscountId = null) => {
+// checks for another non-expired/inactive discount in the same scope
+// (same stockItemId for INVENTORY, or same productId with no stockItemId
+// for NON_INVENTORY) whose date range overlaps the requested one
+const hasOverlappingDiscount = async (scope, startDate, endDate, excludeDiscountId = null) => {
     const query = {
-        stockItemId,
+        ...scope,
         status: { $in: ['scheduled', 'active'] },
         startDate: { $lte: endDate },
         endDate: { $gte: startDate },
@@ -106,31 +114,65 @@ export const startDiscountStatusJob = () => {
 // ---------- controllers ----------
 
 // POST /discounts
+// stockItemId is only required when the target product is INVENTORY.
+// Omit it (or send null) for a NON_INVENTORY discount — it's scoped to the
+// product itself instead.
 export const addDiscount = async (req, res) => {
     try {
         const { productId, stockItemId, discountType, discountValue, quantity, startDate, endDate } = req.body
 
-        if (!productId || !stockItemId) {
-            return res.status(400).json({ success: false, message: 'productId and stockItemId are required' })
+        if (!productId) {
+            return res.status(400).json({ success: false, message: 'productId is required' })
         }
 
-        const stockItem = await stockItemModel.findOne({ _id: stockItemId })
-        if (!stockItem) {
-            return res.status(404).json({ success: false, message: 'Stock item not found' })
+        const product = await productModel.findOne({ _id: productId })
+        if (!product) {
+            return res.status(404).json({ success: false, message: 'Product not found' })
+        }
+
+        let referencePrice
+        let availableQty
+        let scope
+
+        if (product.productType === 'INVENTORY') {
+            if (!stockItemId) {
+                return res.status(400).json({ success: false, message: 'stockItemId is required for inventory products' })
+            }
+
+            const stockItem = await stockItemModel.findOne({ _id: stockItemId })
+            if (!stockItem) {
+                return res.status(404).json({ success: false, message: 'Stock item not found' })
+            }
+
+            referencePrice = stockItem.sellingPrice
+            availableQty = stockItem.quantityRemaining
+            scope = { stockItemId }
+        } else {
+            // NON_INVENTORY: no batch, so the discount is scoped to the
+            // product directly. No availableQty ceiling — `quantity` here
+            // is purely "how many discounted servings to offer."
+            referencePrice = product.sellingPrice
+            availableQty = undefined
+            scope = { productId: String(product._id), stockItemId: null }
         }
 
         const errors = validateDiscountPayload(
             { discountType, discountValue, quantity, startDate, endDate },
-            stockItem.sellingPrice,
-            stockItem.quantityRemaining
+            referencePrice,
+            availableQty
         )
         if (errors.length) {
             return res.status(400).json({ success: false, message: errors.join(', ') })
         }
 
-        const overlapping = await hasOverlappingDiscount(stockItemId, startDate, endDate)
+        const overlapping = await hasOverlappingDiscount(scope, startDate, endDate)
         if (overlapping) {
-            return res.status(409).json({ success: false, message: 'An active or scheduled discount already exists for this stock item in the given date range' })
+            return res.status(409).json({
+                success: false,
+                message: product.productType === 'INVENTORY'
+                    ? 'An active or scheduled discount already exists for this stock item in the given date range'
+                    : 'An active or scheduled discount already exists for this product in the given date range',
+            })
         }
 
         const discountId = await generateDiscountId()
@@ -139,7 +181,7 @@ export const addDiscount = async (req, res) => {
         const discount = await discountModel.create({
             discountId,
             productId,
-            stockItemId,
+            stockItemId: scope.stockItemId ?? null,
             discountType,
             discountValue,
             quantity,
@@ -169,9 +211,25 @@ export const editDiscount = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot edit an expired discount' })
         }
 
-        const stockItem = await stockItemModel.findOne({ _id: discount.stockItemId })
-        if (!stockItem) {
-            return res.status(404).json({ success: false, message: 'Related stock item not found' })
+        // Re-derive the reference price/availability ceiling depending on
+        // which scope this discount belongs to.
+        let referencePrice
+        let availableQty
+
+        if (discount.stockItemId) {
+            const stockItem = await stockItemModel.findOne({ _id: discount.stockItemId })
+            if (!stockItem) {
+                return res.status(404).json({ success: false, message: 'Related stock item not found' })
+            }
+            referencePrice = stockItem.sellingPrice
+            availableQty = stockItem.quantityRemaining
+        } else {
+            const product = await productModel.findOne({ _id: discount.productId })
+            if (!product) {
+                return res.status(404).json({ success: false, message: 'Related product not found' })
+            }
+            referencePrice = product.sellingPrice
+            availableQty = undefined
         }
 
         const merged = {
@@ -182,7 +240,7 @@ export const editDiscount = async (req, res) => {
             endDate: endDate ?? discount.endDate,
         }
 
-        const errors = validateDiscountPayload(merged, stockItem.sellingPrice, stockItem.quantityRemaining)
+        const errors = validateDiscountPayload(merged, referencePrice, availableQty)
         if (errors.length) {
             return res.status(400).json({ success: false, message: errors.join(', ') })
         }
@@ -201,7 +259,11 @@ export const editDiscount = async (req, res) => {
             merged.remainingQuantity = newRemaining
         }
 
-        const overlapping = await hasOverlappingDiscount(discount.stockItemId, merged.startDate, merged.endDate, discountId)
+        const scope = discount.stockItemId
+            ? { stockItemId: discount.stockItemId }
+            : { productId: discount.productId, stockItemId: null }
+
+        const overlapping = await hasOverlappingDiscount(scope, merged.startDate, merged.endDate, discountId)
         if (overlapping) {
             return res.status(409).json({ success: false, message: 'Another active or scheduled discount overlaps this date range' })
         }
@@ -273,7 +335,7 @@ export const getAllDiscounts = async (req, res) => {
         const discountsWithDetails = await Promise.all(
             discounts.map(async (discount) => {
                 const product = discount.productId
-                    ? await productModel.findById(discount.productId).select('productName productCode')
+                    ? await productModel.findById(discount.productId).select('productName productCode productType')
                     : null
 
                 const stock = discount.stockItemId
@@ -284,6 +346,7 @@ export const getAllDiscounts = async (req, res) => {
                     ...discount.toObject(),
                     productName: product?.productName || null,
                     productCode: product?.productCode || null,
+                    productType: product?.productType || null,
                     stockId: stock?.stockId || null
                 }
             })
@@ -335,10 +398,9 @@ export const deleteDiscount = async (req, res) => {
     }
 }
 
-// ---------- used internally by other controllers (e.g. order/sale controller) ----------
+// ---------- used internally by other controllers (e.g. cashier/cart/order) ----------
 
-// Returns the currently active discount (if any) for a stock item, and the
-// discounted unit price. Call this at sale time to price an item correctly.
+// INVENTORY: active discount (if any) for a specific stock batch.
 export const getActiveDiscountForStockItem = async (stockItemId) => {
     await expireStaleDiscounts({ stockItemId })
 
@@ -347,11 +409,12 @@ export const getActiveDiscountForStockItem = async (stockItemId) => {
         status: 'active',
         startDate: { $lte: new Date() },
         endDate: { $gte: new Date() },
+        remainingQuantity: { $gt: 0 },
     })
 
     if (!discount) return null
 
-    const stockItem = await stockItemModel.findOne({ stockItemId })
+    const stockItem = await stockItemModel.findOne({ _id: stockItemId })
     if (!stockItem) return null
 
     const discountedPrice = discount.discountType === 'percentage'
@@ -361,6 +424,36 @@ export const getActiveDiscountForStockItem = async (stockItemId) => {
     return {
         discount,
         originalPrice: stockItem.sellingPrice,
+        discountedPrice: Math.max(discountedPrice, 0),
+    }
+}
+
+// NON_INVENTORY: active discount (if any) scoped to the product itself
+// (stockItemId: null). Mirrors getActiveDiscountForStockItem above.
+export const getActiveDiscountForProduct = async (productId) => {
+    await expireStaleDiscounts({ productId: String(productId), stockItemId: null })
+
+    const discount = await discountModel.findOne({
+        productId: String(productId),
+        stockItemId: null,
+        status: 'active',
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() },
+        remainingQuantity: { $gt: 0 },
+    })
+
+    if (!discount) return null
+
+    const product = await productModel.findOne({ _id: productId })
+    if (!product) return null
+
+    const discountedPrice = discount.discountType === 'percentage'
+        ? product.sellingPrice - (product.sellingPrice * discount.discountValue / 100)
+        : product.sellingPrice - discount.discountValue
+
+    return {
+        discount,
+        originalPrice: product.sellingPrice,
         discountedPrice: Math.max(discountedPrice, 0),
     }
 }
