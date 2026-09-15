@@ -1,48 +1,13 @@
-import jwt from 'jsonwebtoken';
 import bycrypt from 'bcrypt';
 import validator from 'validator';
 import userModel from '../models/userModel.js';
 import { passwordValidator } from '../middleware/passwordValidator.js';
 
-// login user
-const loginUser = async (req, res) => {
-    const { username, password } = req.body;
-    try {
-        const user = await userModel.findOne({ username });
-
-        if (!user.status) {
-            res.json({ success: false, message: "User is deactivated" });
-            return;
-        }
-
-        if (!user) {
-            res.json({ success: false, message: "Invalid username or password" });
-        }
-
-        const isMatch = await bycrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.json({ success: false, message: "Invalid username or password" })
-        }
-
-        const token = createToken(user._id, user.username);
-        const date = new Date();
-        const localTime = date.toLocaleString();
-        user.lastLogin = localTime;
-        await user.save();
-
-        res.json({ success: true, token: token, username: username });
-
-    } catch (error) {
-        console.error(error);
-        res.json({ success: false, message: "Error" });
-    }
-}
-
-const createToken = (id, username) => {
-    return jwt.sign({ id: id, username: username }, process.env.JWT_SECRET, { expiresIn: '1d' });
-}
-
-// register user
+// register user (admin creating a new staff account — NOT a self-signup
+// flow, so this no longer returns a login token. The previous
+// createToken(user._id) call was also missing its second argument,
+// silently producing a token with username: undefined that nothing
+// actually used anyway.)
 const registerUser = async (req, res) => {
     const { name, username, email, role, password } = req.body;
     try {
@@ -74,9 +39,8 @@ const registerUser = async (req, res) => {
             password: hashedPassword,
         })
 
-        const user = await newUser.save();
-        const token = createToken(user._id)
-        res.json({ success: true, token });
+        await newUser.save();
+        res.json({ success: true, message: "User created successfully" });
 
     } catch (error) {
         console.error(error)
@@ -91,7 +55,7 @@ const updateUserStatus = async (req, res) => {
         const user = await userModel.findOne({ username });
 
         if (!user) {
-            res.json({ success: false, message: "Invalid username" });
+            return res.json({ success: false, message: "Invalid username" });
         }
 
         await userModel.findOneAndUpdate({ username }, { status: status });
@@ -169,12 +133,17 @@ const deleteUser = async (req, res) => {
     }
 }
 
+// Changed to identify the caller from their own session (req.user, set by
+// requireAuth on the route) rather than a client-supplied `username` in
+// the body — otherwise nothing stopped a request claiming to be any
+// other account and changing THEIR password.
 const changePassword = async (req, res) => {
-    const { username, oldPassword, newPassword, confirmPassword } = req.body;
-
-    const user = await userModel.findOne({ username });
+    const { oldPassword, newPassword, confirmPassword } = req.body;
+    const username = req.user.username;
 
     try {
+        const user = await userModel.findOne({ username });
+
         if (!user) {
             return res.json({ success: false, message: "Invalid username" });
         }
@@ -207,9 +176,13 @@ const changePassword = async (req, res) => {
     }
 }
 
+// Excludes password hashes from the response — previously returned the
+// full user documents, hash included, to anyone who could reach this
+// endpoint (which, until requireAuth is applied at the router level, was
+// anyone at all).
 const fetchUsers = async (req, res) => {
     try {
-        const users = await userModel.find({});
+        const users = await userModel.find({}).select('-password');
         res.json({ success: true, users: users });
     } catch (error) {
         console.log("Error fetching users: ", error);
@@ -217,10 +190,11 @@ const fetchUsers = async (req, res) => {
     }
 }
 
+// Same password-exclusion fix as fetchUsers.
 const getUserById = async (req, res) => {
     const { id } = req.body;
     try {
-        const user = await userModel.findById(id);
+        const user = await userModel.findById(id).select('-password');
         if (!user) {    
             return res.json({ success: false, message: "User not found" });
         }
@@ -231,4 +205,4 @@ const getUserById = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, updateUserStatus, editUser, deleteUser, changePassword, fetchUsers, getUserById };
+export { registerUser, updateUserStatus, editUser, deleteUser, changePassword, fetchUsers, getUserById };

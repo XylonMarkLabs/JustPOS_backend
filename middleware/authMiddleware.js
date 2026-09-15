@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import Business from '../models/businessModel.js';
+import userModel from '../models/userModel.js';
 
 // Protect routes middleware
 const protect = async (req, res, next) => {
@@ -81,6 +82,57 @@ const adminOnly = async (req, res, next) => {
     next();
 };
 
+// ---------------------------------------------------------------------
+// Staff user auth (Admin/Manager/Cashier) — separate from the Business
+// auth above, which is for the currently-disabled business feature and
+// reads a Bearer header. This reads the httpOnly `token` cookie instead,
+// since staff logins are moving off localStorage-stored JWTs.
+// ---------------------------------------------------------------------
+
+// requireAuth: verifies the cookie, then re-fetches the user fresh from
+// the DB on every request rather than trusting whatever role is baked
+// into the token payload — a role change or deactivation takes effect
+// immediately instead of waiting for the old token to expire.
+const requireAuth = async (req, res, next) => {
+    try {
+        const token = req.cookies?.token;
+
+        if (!token) {
+            return res.status(401).json({ success: false, message: 'Not authenticated' });
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+        // NOTE: adjust `decoded.id` / `.select('-password')` if your
+        // jwt.sign() payload key or userModel's password field are named
+        // differently — I don't have userController.js or userModel.js
+        // yet to confirm the exact field names.
+        const user = await userModel.findById(decoded.id).select('-password');
+
+        if (!user) {
+            return res.status(401).json({ success: false, message: 'Not authenticated' });
+        }
+
+        req.user = user;
+        next();
+    } catch (error) {
+        console.error('requireAuth error:', error);
+        return res.status(401).json({ success: false, message: 'Invalid or expired session' });
+    }
+};
+
+// requireRole: must run AFTER requireAuth — depends on req.user already
+// being set. Usage: router.post('/add', requireAuth, requireRole('Admin'), addProduct)
+const requireRole = (...allowedRoles) => (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Not authenticated' });
+    }
+    if (!allowedRoles.includes(req.user.role)) {
+        return res.status(403).json({ success: false, message: 'You do not have permission to perform this action' });
+    }
+    next();
+};
+
 // Rate limiting middleware
 const rateLimiter = {
     attempts: new Map(),
@@ -146,5 +198,7 @@ export {
     optionalAuth,
     adminOnly,
     isRateLimited,
-    logFailedAttempt
+    logFailedAttempt,
+    requireAuth,
+    requireRole
 };

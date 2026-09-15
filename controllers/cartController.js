@@ -11,10 +11,15 @@ const sameStockItem = (a, b) => String(a || '') === String(b || '');
 
 const addToCart = async (req, res) => {
   try {
-    const { username, product } = req.body;
+    // Identity comes from the verified session (requireAuth), not the
+    // client-supplied body. Previously `username` was read straight from
+    // req.body — a logged-in user could add items to ANY other user's
+    // cart just by naming them in the request.
+    const username = req.user.username;
+    const { product } = req.body;
 
-    if (!username || !product) {
-      return res.status(400).json({ success: false, message: 'username and product are required' });
+    if (!product) {
+      return res.status(400).json({ success: false, message: 'product is required' });
     }
 
     // --- Re-derive everything from the database. Nothing about price or
@@ -223,7 +228,9 @@ const addToCart = async (req, res) => {
 // for a NON_INVENTORY line) instead of productCode/unitPrice.
 const removeFromCart = async (req, res) => {
   try {
-    const { username, productId, stockItemId } = req.body;
+    // Identity from session, not from the client — same fix as addToCart.
+    const username = req.user.username;
+    const { productId, stockItemId } = req.body;
 
     const cart = await cartModel.findOne({ username });
     if (!cart) return res.status(404).json({ message: 'Cart not found' });
@@ -243,7 +250,13 @@ const removeFromCart = async (req, res) => {
 
 const getCart = async (req, res) => {
   try {
-    const { username } = req.params;
+    // Identity from session — req.params.username is intentionally
+    // ignored now. The route still accepts /get/:username for now so the
+    // frontend doesn't need an immediate change, but whatever's in that
+    // param no longer has any effect; only the caller's own cart is ever
+    // returned. Worth cleaning the route up to drop the param entirely
+    // once the frontend call site is updated to match.
+    const username = req.user.username;
 
     // Populate item.productId with the live product doc so we can pull
     // supplementary display data (currently just the image) — pricing
@@ -300,7 +313,8 @@ const getCart = async (req, res) => {
 
 const clearCart = async (req, res) => {
   try {
-    const { username } = req.params;
+    // Same as getCart — identity from session, :username param ignored.
+    const username = req.user.username;
 
     const cart = await cartModel.findOne({ username });
     if (!cart || cart.items.length === 0) {
@@ -319,7 +333,9 @@ const clearCart = async (req, res) => {
 
 const updateCartQuantity = async (req, res) => {
   try {
-    const { username, productId, stockItemId, quantity } = req.body;
+    // Identity from session, not from the client — same fix as addToCart.
+    const username = req.user.username;
+    const { productId, stockItemId, quantity } = req.body;
 
     const cart = await cartModel.findOne({ username });
     if (!cart) return res.status(404).json({ message: 'Cart not found' });

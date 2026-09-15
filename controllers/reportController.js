@@ -16,10 +16,6 @@ export const getSalesReport = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid startDate or endDate' })
         }
 
-        // Single aggregation, split via $facet so the order-level totals
-        // (sales, order count, discount given) and the item-level breakdown
-        // (per-product units/revenue/profit) are computed in one round trip
-        // instead of two separate queries scanning the same date range.
         const [result] = await orderModel.aggregate([
             { $match: { date: { $gte: start, $lte: end } } },
             {
@@ -73,6 +69,8 @@ export const getSalesReport = async (req, res) => {
                 revenue: item.revenue,
             }))
 
+        const isAdmin = req.user?.role === 'Admin'
+
         res.status(200).json({
             success: true,
             report: {
@@ -80,7 +78,7 @@ export const getSalesReport = async (req, res) => {
                 totalOrders: summary.totalOrders,
                 avgOrderValue,
                 totalDiscountGiven: summary.totalDiscountGiven,
-                totalProfit,
+                ...(isAdmin ? { totalProfit } : {}),
                 topProducts,
             },
         })
@@ -93,7 +91,14 @@ export const getSalesReport = async (req, res) => {
 export const getInventoryReport = async (req, res) => {
     try {
         const snapshot = await computeInventorySnapshot()
-        res.status(200).json({ success: true, report: snapshot })
+
+        const isAdmin = req.user?.role === 'Admin'
+        const { totalValue, ...rest } = snapshot
+
+        res.status(200).json({
+            success: true,
+            report: isAdmin ? snapshot : rest,
+        })
     } catch (error) {
         console.error('Error generating inventory report:', error)
         res.status(500).json({ success: false, message: 'Server error while generating inventory report' })

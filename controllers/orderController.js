@@ -9,11 +9,9 @@ const checkoutCart = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
-    const { username, paymentMethod, cashReceived } = req.body;
+    const username = req.user.username;
+    const { paymentMethod, cashReceived } = req.body;
 
-    if (!username) {
-      return res.status(400).json({ success: false, message: 'username is required' });
-    }
     if (!['cash', 'card'].includes(paymentMethod)) {
       return res.status(400).json({ success: false, message: 'A valid paymentMethod is required' });
     }
@@ -35,10 +33,6 @@ const checkoutCart = async (req, res) => {
         let discountValue = 0;
 
         if (cartItem.productType === 'NON_INVENTORY') {
-          // Made to order — nothing to decrement for stock. Confirm the
-          // product still exists and is active, and if a discount applied,
-          // re-validate and decrement it the same way the INVENTORY branch
-          // does for a stock item — just scoped by productId instead.
           const product = await productModel.findOne({ _id: cartItem.productId }).session(session);
 
           if (!product || product.status !== 1) {
@@ -72,12 +66,6 @@ const checkoutCart = async (req, res) => {
             discountValue = cartItem.originalPrice - cartItem.unitPrice;
           }
         } else {
-          // INVENTORY — unchanged: re-check stock at the moment of
-          // checkout, not just at add-to-cart time — someone else may have
-          // bought the last units in between. $inc with a
-          // quantityRemaining >= qty filter makes the decrement atomic: it
-          // either succeeds only if enough stock is still there, or
-          // matches nothing.
           const stockUpdate = await stockItemModel.findOneAndUpdate(
             { _id: cartItem.stockItemId, quantityRemaining: { $gte: cartItem.quantity } },
             { $inc: { quantityRemaining: -cartItem.quantity } },
@@ -90,11 +78,6 @@ const checkoutCart = async (req, res) => {
 
           unitCost = stockUpdate.unitCost;
 
-          // The price the cart line was built with is trusted here (it was
-          // computed server-side back in addToCart), but the *discount*
-          // still needs re-validating and re-decrementing now, since it may
-          // have been edited, paused, or exhausted by another sale since
-          // this item was added to the cart.
           if (cartItem.discountId) {
             const now = new Date();
             const discountUpdate = await discountModel.findOneAndUpdate(
@@ -111,11 +94,6 @@ const checkoutCart = async (req, res) => {
             );
 
             if (!discountUpdate) {
-              // Discount is no longer honourable (expired/paused/exhausted
-              // since it was added to the cart). Don't silently charge full
-              // price for something the cashier believes is discounted —
-              // fail the whole checkout so they can refresh and confirm
-              // with the customer.
               throw new Error(
                 `The discount on "${cartItem.name}" is no longer available — please refresh the cart`
               );
@@ -146,8 +124,6 @@ const checkoutCart = async (req, res) => {
         });
       }
 
-      // cashReceived/changeGiven are computed here, not taken from the
-      // client — a tampered request could otherwise claim any change amount.
       let cashReceivedFinal = null;
       let changeGivenFinal = null;
       if (paymentMethod === 'cash') {
