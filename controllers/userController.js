@@ -3,11 +3,6 @@ import validator from 'validator';
 import userModel from '../models/userModel.js';
 import { passwordValidator } from '../middleware/passwordValidator.js';
 
-// register user (admin creating a new staff account — NOT a self-signup
-// flow, so this no longer returns a login token. The previous
-// createToken(user._id) call was also missing its second argument,
-// silently producing a token with username: undefined that nothing
-// actually used anyway.)
 const registerUser = async (req, res) => {
     const { name, username, email, role, password } = req.body;
     try {
@@ -133,10 +128,6 @@ const deleteUser = async (req, res) => {
     }
 }
 
-// Changed to identify the caller from their own session (req.user, set by
-// requireAuth on the route) rather than a client-supplied `username` in
-// the body — otherwise nothing stopped a request claiming to be any
-// other account and changing THEIR password.
 const changePassword = async (req, res) => {
     const { oldPassword, newPassword, confirmPassword } = req.body;
     const username = req.user.username;
@@ -176,10 +167,6 @@ const changePassword = async (req, res) => {
     }
 }
 
-// Excludes password hashes from the response — previously returned the
-// full user documents, hash included, to anyone who could reach this
-// endpoint (which, until requireAuth is applied at the router level, was
-// anyone at all).
 const fetchUsers = async (req, res) => {
     try {
         const users = await userModel.find({}).select('-password');
