@@ -19,13 +19,6 @@ const computeStatus = (startDate, endDate, manualStatus) => {
     return 'active'
 }
 
-// referencePrice: the price a fixed discount is checked against (stock
-// item's price for INVENTORY, product's own price for NON_INVENTORY).
-// availableQty: an optional physical ceiling on `quantity` — only meaningful
-// for INVENTORY (can't discount more units than the batch has). Left
-// undefined for NON_INVENTORY, since a made-to-order item has no such
-// ceiling; `quantity` there just means "how many discounted servings to
-// offer," not a stock count.
 const validateDiscountPayload = ({ discountType, discountValue, quantity, startDate, endDate }, referencePrice, availableQty) => {
     const errors = []
 
@@ -56,9 +49,6 @@ const validateDiscountPayload = ({ discountType, discountValue, quantity, startD
     return errors
 }
 
-// checks for another non-expired/inactive discount in the same scope
-// (same stockItemId for INVENTORY, or same productId with no stockItemId
-// for NON_INVENTORY) whose date range overlaps the requested one
 const hasOverlappingDiscount = async (scope, startDate, endDate, excludeDiscountId = null) => {
     const query = {
         ...scope,
@@ -75,7 +65,6 @@ const hasOverlappingDiscount = async (scope, startDate, endDate, excludeDiscount
 export const expireStaleDiscounts = async (filter = {}) => {
     const now = new Date()
 
-    // Mark discounts as expired if their end date has passed
     await discountModel.updateMany(
         {
             ...filter,
@@ -85,7 +74,6 @@ export const expireStaleDiscounts = async (filter = {}) => {
         { $set: { status: 'expired' } }
     )
 
-    // Activate scheduled discounts that have started but have not ended
     await discountModel.updateMany(
         {
             ...filter,
@@ -97,9 +85,6 @@ export const expireStaleDiscounts = async (filter = {}) => {
     )
 }
 
-// Runs every minute to keep discount statuses up to date.
-// For a POS system, you can use '*/5 * * * *' to run every 5 minutes
-// if a few minutes of delay when activating a discount is acceptable.
 export const startDiscountStatusJob = () => {
     cron.schedule('* * * * *', async () => {
         try {
@@ -111,12 +96,6 @@ export const startDiscountStatusJob = () => {
     console.log('Discount status sync job started (runs every minute)')
 }
 
-// ---------- controllers ----------
-
-// POST /discounts
-// stockItemId is only required when the target product is INVENTORY.
-// Omit it (or send null) for a NON_INVENTORY discount — it's scoped to the
-// product itself instead.
 export const addDiscount = async (req, res) => {
     try {
         const { productId, stockItemId, discountType, discountValue, quantity, startDate, endDate } = req.body
@@ -148,9 +127,6 @@ export const addDiscount = async (req, res) => {
             availableQty = stockItem.quantityRemaining
             scope = { stockItemId }
         } else {
-            // NON_INVENTORY: no batch, so the discount is scoped to the
-            // product directly. No availableQty ceiling — `quantity` here
-            // is purely "how many discounted servings to offer."
             referencePrice = product.sellingPrice
             availableQty = undefined
             scope = { productId: String(product._id), stockItemId: null }
@@ -211,8 +187,6 @@ export const editDiscount = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot edit an expired discount' })
         }
 
-        // Re-derive the reference price/availability ceiling depending on
-        // which scope this discount belongs to.
         let referencePrice
         let availableQty
 
@@ -300,7 +274,6 @@ export const updateStatus = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot change status of an expired discount' })
         }
 
-        // if re-activating, recompute against current dates (could resolve to "scheduled")
         const newStatus = status === 'active'
             ? computeStatus(discount.startDate, discount.endDate)
             : 'inactive'
@@ -428,8 +401,6 @@ export const getActiveDiscountForStockItem = async (stockItemId) => {
     }
 }
 
-// NON_INVENTORY: active discount (if any) scoped to the product itself
-// (stockItemId: null). Mirrors getActiveDiscountForStockItem above.
 export const getActiveDiscountForProduct = async (productId) => {
     await expireStaleDiscounts({ productId: String(productId), stockItemId: null })
 

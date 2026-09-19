@@ -3,24 +3,16 @@ import discountModel from "../models/discountModel.js";
 import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
 
-// Shared by add/remove/update: a cart line is identified by productId +
-// stockItemId. NON_INVENTORY lines always have a null stockItemId (no
-// batch exists), so null-vs-null counts as a match — there's only ever one
-// "no batch" line per product, since its price never varies by batch.
 const sameStockItem = (a, b) => String(a || '') === String(b || '');
 
 const addToCart = async (req, res) => {
   try {
-    const { username, product } = req.body;
+    const username = req.user.username;
+    const { product } = req.body;
 
-    if (!username || !product) {
-      return res.status(400).json({ success: false, message: 'username and product are required' });
+    if (!product) {
+      return res.status(400).json({ success: false, message: 'product is required' });
     }
-
-    // --- Re-derive everything from the database. Nothing about price or
-    // discount is trusted from the client payload — it's only used to
-    // identify *which* records to look up (productId/stockItemId/discountId)
-    // and, at the end, to detect a stale cart on the cashier's screen.
 
     const productExists = await productModel.findOne({
       $or: [{ _id: product.productId }, { productCode: product.productCode }],
@@ -32,9 +24,6 @@ const addToCart = async (req, res) => {
       return res.status(400).json({ success: false, message: 'This product is not currently active' });
     }
 
-    // --- Derive price/discount/availability. Two paths depending on
-    // productType, converging on the same shape before the shared
-    // cart-line logic below.
     let stockItem = null;
     let originalPrice;
     let unitPrice;
@@ -42,9 +31,6 @@ const addToCart = async (req, res) => {
     let availableQty;
 
     if (productExists.productType === 'NON_INVENTORY') {
-      // Made to order — no stock batch, no stock check. Price comes from
-      // the product record; a discount (if any) is scoped to the product
-      // itself (stockItemId: null) rather than a batch.
       originalPrice = Number(productExists.sellingPrice);
       unitPrice = originalPrice;
       availableQty = Infinity;
@@ -66,19 +52,10 @@ const addToCart = async (req, res) => {
             ? originalPrice - (originalPrice * discount.discountValue) / 100
             : originalPrice - discount.discountValue;
           unitPrice = Math.max(unitPrice, 0);
-
-          // Once the discount's allotment runs out, this line can't grow
-          // past it — same behavior as an INVENTORY discount running out
-          // mid-batch. The cashier would add from the separate full-price
-          // row (see getProductsCashier) for anything beyond this.
           availableQty = discount.remainingQuantity;
         }
-        // If the discount no longer validates, fall back to full price
-        // rather than failing the add — same as the INVENTORY path.
       }
     } else {
-      // INVENTORY — unchanged logic from before: resolve the chosen batch,
-      // then re-validate any discount against it.
       const chosenStockItemId = product.stockItems?.[0]?.stockItemId;
       if (!chosenStockItemId) {
         return res.status(400).json({ success: false, message: 'No stock batch specified for this product' });
@@ -112,15 +89,8 @@ const addToCart = async (req, res) => {
             ? originalPrice - (originalPrice * discount.discountValue) / 100
             : originalPrice - discount.discountValue;
           unitPrice = Math.max(unitPrice, 0);
-
-          // Can't sell more of this batch at the discounted price than the
-          // discount has left, even if the batch itself has more stock.
           availableQty = Math.min(availableQty, discount.remainingQuantity);
         }
-        // If the discount no longer validates (expired, exhausted, edited
-        // since the cashier's screen loaded), silently fall back to full
-        // price rather than failing the add — the response below tells the
-        // cashier the price changed.
       }
     }
 
@@ -154,12 +124,6 @@ const addToCart = async (req, res) => {
         items: [buildLineItem(Math.min(requestedIncrement, availableQty))],
       });
     } else {
-      // A cart line is identified by productId + stockItemId — the same
-      // batch at the same (server-computed) price is one line; a
-      // discounted line and a full-price line for the same product are
-      // different batches (or the same batch only partially discounted),
-      // so they never collapse into each other. NON_INVENTORY lines match
-      // on productId alone (stockItemId is null on both sides).
       const itemIndex = cart.items.findIndex(
         (item) => String(item.productId) === String(productExists._id) &&
                   sameStockItem(item.stockItemId, chosenStockItemId)
@@ -193,10 +157,6 @@ const addToCart = async (req, res) => {
 
     await cart.save();
 
-    // Let the cashier UI know if what actually got added differs from what
-    // was requested/displayed (price moved, discount expired between page
-    // load and click, etc.) so it can refresh instead of silently trusting
-    // its own stale state.
     const priceChanged = Number(product.sellingPrice) !== unitPrice;
 
     res.status(200).json({
@@ -213,17 +173,11 @@ const addToCart = async (req, res) => {
   }
 };
 
-// NOTE: matching changed from (productCode, unitPrice) to (productId,
-// stockItemId) — the same identity rule addToCart uses to decide whether
-// two adds collapse into one line. Matching on price was fragile (a
-// discount changing between page load and this call would silently break
-// removal/update), and doesn't work at all for NON_INVENTORY lines, which
-// don't have a meaningfully distinct "price per batch" to key off of.
-// The frontend needs to send productId (and stockItemId, or omit/null it
-// for a NON_INVENTORY line) instead of productCode/unitPrice.
 const removeFromCart = async (req, res) => {
   try {
-    const { username, productId, stockItemId } = req.body;
+    // Identity from session, not from the client — same fix as addToCart.
+    const username = req.user.username;
+    const { productId, stockItemId } = req.body;
 
     const cart = await cartModel.findOne({ username });
     if (!cart) return res.status(404).json({ message: 'Cart not found' });
@@ -243,11 +197,8 @@ const removeFromCart = async (req, res) => {
 
 const getCart = async (req, res) => {
   try {
-    const { username } = req.params;
+    const username = req.user.username;
 
-    // Populate item.productId with the live product doc so we can pull
-    // supplementary display data (currently just the image) — pricing
-    // itself comes entirely from what's already stored on the cart item.
     const cart = await cartModel
       .findOne({ username })
       .populate('items.productId');
@@ -259,9 +210,6 @@ const getCart = async (req, res) => {
     let totalPrice = 0;
 
     const detailedItems = cart.items.map((item) => {
-      // item.productId is either the populated product document, or null
-      // if that product has since been deleted — either way this is only
-      // used for the image and an "available" flag, never for pricing.
       const product = item.productId;
 
       totalPrice += item.subtotal;
@@ -300,7 +248,7 @@ const getCart = async (req, res) => {
 
 const clearCart = async (req, res) => {
   try {
-    const { username } = req.params;
+    const username = req.user.username;
 
     const cart = await cartModel.findOne({ username });
     if (!cart || cart.items.length === 0) {
@@ -319,7 +267,8 @@ const clearCart = async (req, res) => {
 
 const updateCartQuantity = async (req, res) => {
   try {
-    const { username, productId, stockItemId, quantity } = req.body;
+    const username = req.user.username;
+    const { productId, stockItemId, quantity } = req.body;
 
     const cart = await cartModel.findOne({ username });
     if (!cart) return res.status(404).json({ message: 'Cart not found' });
@@ -330,12 +279,8 @@ const updateCartQuantity = async (req, res) => {
     if (itemIndex === -1) return res.status(404).json({ message: 'Product not found in cart' });
 
     if (quantity <= 0) {
-      cart.items.splice(itemIndex, 1); // Remove item if quantity is zero or less
+      cart.items.splice(itemIndex, 1);
     } else {
-      // NOTE: this does not re-check availableQty (batch/discount
-      // remaining) against the new quantity — worth adding the same
-      // availability re-derivation addToCart does if you want this path to
-      // reject "set quantity to 500" the same way incrementing does.
       cart.items[itemIndex].quantity = quantity;
       cart.items[itemIndex].subtotal = cart.items[itemIndex].unitPrice * quantity;
     }

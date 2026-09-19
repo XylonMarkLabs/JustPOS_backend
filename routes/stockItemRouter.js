@@ -1,4 +1,5 @@
 import express from 'express';
+import { getStockByProduct } from '../controllers/stockController';
 
 const stockItemRouter = express.Router();
 

@@ -6,22 +6,12 @@ import discountModel from "../models/discountModel.js";
 
 const getProductsCashier = async (req, res) => {
     try {
-        // Only batches that still have stock available to sell
         const stockItems = await stockItemModel
             .find({ quantityRemaining: { $gt: 0 } })
             .lean();
 
-        // discountModel.stockItemId is stored as a String, so compare as
-        // strings — an ObjectId array in $in won't match String values at
-        // the BSON level even when the hex looks identical.
         const stockItemIds = stockItems.map((item) => String(item._id));
 
-        // Active discounts for these batches. Assumes at most one active
-        // discount per stockItemId at a time (enforced by the overlap check
-        // in addDiscount/editDiscount). If discounts can go stale between
-        // your cron/expiry pass and this read, add the same
-        // startDate/endDate window check here as a belt-and-braces guard —
-        // already included below.
         const now = new Date();
         const activeDiscounts = await discountModel
             .find({
@@ -38,23 +28,6 @@ const getProductsCashier = async (req, res) => {
             discountByStockItem.set(String(discount.stockItemId), discount);
         });
 
-        // Group batches by product + effective selling price. A batch that's
-        // only partially covered by a discount is split into a discounted
-        // portion and a full-price portion, rather than merged into one
-        // ambiguous price.
-        //
-        // A single grouped row can still be backed by multiple physical
-        // batches (e.g. two non-discounted stock items for the same product
-        // that happen to share a selling price), so each group tracks the
-        // stockItemId + quantity of every batch feeding into it. The order
-        // controller needs this to know exactly which batch(es) to decrement
-        // when the cashier sells from this row — it can't assume one
-        // stockItemId per row.
-        //
-        // NOTE: stock items only ever exist for INVENTORY products (nothing
-        // creates one for a NON_INVENTORY product), so this whole section
-        // naturally only ever touches INVENTORY products. NON_INVENTORY
-        // products are appended separately, below.
         const grouped = new Map();
 
         const addToGroup = (key, base, stockItemId, qty) => {
@@ -91,10 +64,6 @@ const getProductsCashier = async (req, res) => {
                 ? originalPrice - (originalPrice * discount.discountValue) / 100
                 : originalPrice - discount.discountValue;
 
-            // Keyed by discountId (not price) so each discount stays its own
-            // row even if, coincidentally, another batch's price matches.
-            // A discounted row is always backed by exactly one stockItemId,
-            // since a discount is scoped to a single batch.
             addToGroup(`${item.productId}_disc_${discount.discountId}`, {
                 productId: item.productId,
                 sellingPrice: Math.max(discountedPrice, 0),
@@ -121,7 +90,6 @@ const getProductsCashier = async (req, res) => {
 
         const groupedEntries = Array.from(grouped.values());
 
-        // Look up each product's base details (name, code, category, image...)
         const productIds = [...new Set(groupedEntries.map((entry) => entry.productId))];
         const objectIdCandidates = productIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
         const codeCandidates = productIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
@@ -139,8 +107,6 @@ const getProductsCashier = async (req, res) => {
             if (product.productCode) productLookup.set(product.productCode, product);
         });
 
-        // Combine each grouped batch with its product's details. Skip
-        // batches whose product is missing, inactive, or has been deleted.
         const cashierProducts = groupedEntries
             .map((entry) => {
                 const product = productLookup.get(String(entry.productId));
@@ -165,16 +131,6 @@ const getProductsCashier = async (req, res) => {
             })
             .filter(Boolean);
 
-        // NON_INVENTORY products (made-to-order — no stock batches exist for
-        // these at all): priced from product.sellingPrice, with an active
-        // discount (scoped by productId, stockItemId: null) applied the
-        // same way a batch discount would be. A product with an active
-        // discount that only covers PART of its remaining allotment (i.e.
-        // discount.remainingQuantity is capped, unlike the product itself
-        // which is unlimited) becomes two rows, same pattern as a
-        // partially-discounted stock batch: a discounted row capped at
-        // discount.remainingQuantity, and a full-price row with no cap for
-        // anything beyond that.
         const nonInventoryProducts = await productModel
             .find({ productType: 'NON_INVENTORY', status: 1 })
             .lean();
@@ -338,11 +294,6 @@ const editProduct = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    // Guard against orphaning stock: converting an INVENTORY product to
-    // NON_INVENTORY while it still has recorded batches would leave those
-    // StockItem rows referencing a product nothing in the UI treats as
-    // having stock anymore — not deleted, just invisible. Block the
-    // conversion instead of silently creating that inconsistency.
     if (productType === 'NON_INVENTORY' && product.productType === 'INVENTORY') {
       const hasStockItems = await stockItemModel.exists({
         $or: [{ productId: String(product._id) }, { productId: product.productCode }],
@@ -365,10 +316,6 @@ const editProduct = async (req, res) => {
     if (sellingPrice !== undefined) product.sellingPrice = sellingPrice;
     if (costPrice !== undefined) product.costPrice = costPrice;
 
-    // .save() (not findOneAndUpdate) so the pre('validate') hook actually
-    // runs with the full, merged document — findOneAndUpdate's validators
-    // operate on the update payload in isolation and don't reliably see
-    // `this.productType` the way the conditional `required` function needs.
     await product.save();
 
     res.status(200).json({ success: true, message: 'Product edited successfully', product });
@@ -413,12 +360,6 @@ const getProducts = async (req, res) => {
   }
 };
 
-// NOTE: with StockItem batches as the real source of truth
-// (computeInventorySnapshot sums quantityRemaining directly), this endpoint
-// no longer feeds anything else in the system — nothing reads
-// product.quantityInStock for actual stock decisions anymore. Worth
-// checking whether any frontend still calls this before removing it
-// entirely; left functional here, just guarded against NON_INVENTORY.
 const updateStockLevel = async (req, res) => {
   const { productCode, quantity } = req.body;
   try {

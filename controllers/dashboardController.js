@@ -84,9 +84,6 @@ export const getDashboardOverview = async (req, res) => {
             revenue: p.revenue,
         }))
 
-        // Fill in any days with zero orders so the trend chart has no gaps —
-        // the aggregation above only produces entries for days that
-        // actually had at least one order.
         const trendMap = new Map((facets.trend || []).map((t) => [t._id, t.revenue]))
         const salesTrend = []
         for (let i = 6; i >= 0; i--) {
