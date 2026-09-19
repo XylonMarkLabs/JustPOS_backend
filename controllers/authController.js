@@ -5,8 +5,8 @@ import userModel from '../models/userModel.js';
 const COOKIE_OPTIONS = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000, // 1 day — matches createToken's expiresIn
+    sameSite: 'none',
+    maxAge: 24 * 60 * 60 * 1000,
     path: '/',
 };
 
