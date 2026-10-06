@@ -98,6 +98,10 @@ const requireAuth = async (req, res, next) => {
             return res.status(401).json({ success: false, message: 'Not authenticated' });
         }
 
+        if (!user.status) {
+            return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact an administrator for assistance.' });
+        }
+
         req.user = user;
         next();
     } catch (error) {
