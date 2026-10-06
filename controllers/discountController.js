@@ -170,7 +170,7 @@ export const addDiscount = async (req, res) => {
         return res.status(201).json({ success: true, message: 'Discount created', data: discount })
     } catch (error) {
         console.error('addDiscount error:', error)
-        return res.status(500).json({ success: false, message: 'Failed to create discount', error: error.message })
+        return res.status(500).json({ success: false, message: 'Failed to create discount' })
     }
 }
 
@@ -253,7 +253,7 @@ export const editDiscount = async (req, res) => {
         return res.status(200).json({ success: true, message: 'Discount updated', data: updated })
     } catch (error) {
         console.error('editDiscount error:', error)
-        return res.status(500).json({ success: false, message: 'Failed to update discount', error: error.message })
+        return res.status(500).json({ success: false, message: 'Failed to update discount' })
     }
 }
 
@@ -287,7 +287,7 @@ export const updateStatus = async (req, res) => {
         return res.status(200).json({ success: true, message: 'Discount status updated', data: updated })
     } catch (error) {
         console.error('updateStatus error:', error)
-        return res.status(500).json({ success: false, message: 'Failed to update status', error: error.message })
+        return res.status(500).json({ success: false, message: 'Failed to update status' })
     }
 }
 
@@ -333,8 +333,7 @@ export const getAllDiscounts = async (req, res) => {
         console.error('getAllDiscounts error:', error)
         return res.status(500).json({
             success: false,
-            message: 'Failed to fetch discounts',
-            error: error.message
+            message: 'Failed to fetch discounts'
         })
     }
 }
@@ -352,7 +351,7 @@ export const getDiscountById = async (req, res) => {
         return res.status(200).json({ success: true, discount })
     } catch (error) {
         console.error('getDiscountById error:', error)
-        return res.status(500).json({ success: false, message: 'Failed to fetch discount', error: error.message })
+        return res.status(500).json({ success: false, message: 'Failed to fetch discount' })
     }
 }
 
@@ -367,7 +366,7 @@ export const deleteDiscount = async (req, res) => {
         return res.status(200).json({ success: true, message: 'Discount deleted', data: deleted })
     } catch (error) {
         console.error('deleteDiscount error:', error)
-        return res.status(500).json({ success: false, message: 'Failed to delete discount', error: error.message })
+        return res.status(500).json({ success: false, message: 'Failed to delete discount' })
     }
 }
 

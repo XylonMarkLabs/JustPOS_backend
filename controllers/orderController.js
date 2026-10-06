@@ -156,7 +156,7 @@ const checkoutCart = async (req, res) => {
     res.status(200).json({ success: true, message: 'Order placed successfully', order: newOrder });
   } catch (error) {
     console.error('Error during checkout:', error);
-    res.status(400).json({ success: false, message: error.message || 'Server error during checkout' });
+    res.status(400).json({ success: false, message: 'Server error during checkout' });
   } finally {
     session.endSession();
   }
