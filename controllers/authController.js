@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
 import bycrypt from 'bcrypt';
 import userModel from '../models/userModel.js';
+import { usernameValidator } from '../middleware/inputValidator.js';
+import { isRateLimited, logFailedAttempt } from '../middleware/authMiddleware.js';
 
 const COOKIE_OPTIONS = {
     httpOnly: true,
@@ -17,36 +19,77 @@ const createToken = (id, username) => {
 // login user
 const loginUser = async (req, res) => {
     const { username, password } = req.body;
+
     try {
+        
+        // Check rate limit before attempting authentication
+        if (isRateLimited(username, req.ip)) {
+            return res.status(429).json({
+                success: false,
+                message: "Too many login attempts. Please try again later."
+            });
+        }
+
         const user = await userModel.findOne({ username });
 
         if (!user) {
-            return res.json({ success: false, message: "Invalid username or password" });
+            // Log failed attempt
+            logFailedAttempt(username, req.ip);
+
+            return res.json({
+                success: false,
+                message: "Invalid username or password"
+            });
         }
 
         if (!user.status) {
-            return res.json({ success: false, message: "User is deactivated" });
+            return res.json({
+                success: false,
+                message: "User is deactivated"
+            });
         }
 
         const isMatch = await bycrypt.compare(password, user.password);
+
         if (!isMatch) {
-            return res.json({ success: false, message: "Invalid username or password" })
+            // Log failed attempt
+            logFailedAttempt(username, req.ip);
+
+            return res.json({
+                success: false,
+                message: "Invalid username or password"
+            });
         }
 
+        // Successful login → clear failed attempts
+        resetFailedAttempts(username, req.ip);
+
         const token = createToken(user._id, user.username);
+
         const date = new Date();
         const localTime = date.toLocaleString();
+
         user.lastLogin = localTime;
         await user.save();
 
-        res.cookie('token', token, COOKIE_OPTIONS);
-        res.json({ success: true, user: { username: user.username, role: user.role } });
+        res.cookie("token", token, COOKIE_OPTIONS);
+
+        res.json({
+            success: true,
+            user: {
+                username: user.username,
+                role: user.role
+            }
+        });
 
     } catch (error) {
         console.error(error);
-        res.json({ success: false, message: "Error" });
+        res.json({
+            success: false,
+            message: "Error"
+        });
     }
-}
+};
 
 const logoutUser = async (req, res) => {
     res.clearCookie('token', COOKIE_OPTIONS);

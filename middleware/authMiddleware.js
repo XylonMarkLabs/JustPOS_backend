@@ -127,7 +127,7 @@ const rateLimiter = {
     maxAttempts: 5
 };
 
-const isRateLimited = async (identifier, ip) => {
+const isRateLimited = (identifier, ip) => {
     const key = `${identifier}:${ip}`;
     const now = Date.now();
     const attempt = rateLimiter.attempts.get(key);
@@ -156,7 +156,7 @@ const isRateLimited = async (identifier, ip) => {
     return false;
 };
 
-const logFailedAttempt = async (identifier, ip) => {
+const logFailedAttempt = (identifier, ip) => {
     const key = `${identifier}:${ip}`;
     const now = Date.now();
     const attempt = rateLimiter.attempts.get(key);
