@@ -1,8 +1,81 @@
 import mongoose from "mongoose";
+import validator from "validator";
 import { deleteImage } from "../config/cloudinary.js";
+import { codeValidator, categoryNameValidator, productCodeValidator } from "../middleware/inputValidator.js";
 import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
 import discountModel from "../models/discountModel.js";
+
+const PRODUCT_TYPES = ['INVENTORY', 'NON_INVENTORY'];
+
+const badRequest = (res, message) =>
+  res.status(400).json({ success: false, message });
+
+// Run several validators in order and return the first error message (or null).
+const firstError = (...errors) => errors.find(Boolean) || null;
+
+const productNameValidator = (name) => {
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return 'Product name is required and must be a string';
+  }
+  if (name.length > 100) {
+    return 'Product name must be at most 100 characters';
+  }
+  return null;
+};
+
+const productTypeValidator = (productType) => {
+  if (!PRODUCT_TYPES.includes(productType)) {
+    return 'productType must be either "INVENTORY" or "NON_INVENTORY"';
+  }
+  return null;
+};
+
+// Numeric fields (prices, tax, stock levels). Accepts a number OR a numeric
+// string (HTML forms often send "10.50"), but never objects/arrays/booleans.
+const numberValidator = (value, label, { min = 0, max = 1e9, integer = false } = {}) => {
+  const isNumeric =
+    (typeof value === 'number') ||
+    (typeof value === 'string' && value.trim() !== '');
+  const num = isNumeric ? Number(value) : NaN;
+
+  if (!Number.isFinite(num)) {
+    return `${label} must be a valid number`;
+  }
+  if (integer && !Number.isInteger(num)) {
+    return `${label} must be a whole number`;
+  }
+  if (num < min || num > max) {
+    return `${label} must be between ${min} and ${max}`;
+  }
+  return null;
+};
+
+// Cloudinary public IDs can contain folders ("products/abc123"), so "/" and
+// "." are allowed here, unlike the default codeValidator pattern.
+const publicIdValidator = (publicId) =>
+  codeValidator(publicId, 'Image public ID', {
+    maxLength: 200,
+    pattern: /^[a-zA-Z0-9_\-\/.]+$/,
+  });
+
+const imageURLValidator = (url) => {
+  if (typeof url !== 'string' || url.length > 500) {
+    return 'Image URL must be a string of at most 500 characters';
+  }
+  if (!validator.isURL(url, { protocols: ['http', 'https'], require_protocol: true })) {
+    return 'Image URL is not valid';
+  }
+  return null;
+};
+
+// Product status: 1 = active (see getProductsCashier / addToCart), 0 = inactive.
+const productStatusValidator = (status) => {
+  if (![0, 1].includes(status)) {
+    return 'Status must be 0 or 1';
+  }
+  return null;
+};
 
 const getProductsCashier = async (req, res) => {
     try {
@@ -232,12 +305,25 @@ const addProduct = async (req, res) => {
       imagePublicId,
     } = req.body;
 
-    if (!['INVENTORY', 'NON_INVENTORY'].includes(productType)) {
-      return res.status(400).json({
-        success: false,
-        message: 'productType must be either "INVENTORY" or "NON_INVENTORY"',
-      });
-    }
+    // --- validate required fields ---
+    const requiredError = firstError(
+      productTypeValidator(productType),
+      productNameValidator(productName),
+      productCodeValidator(productCode),
+      categoryNameValidator(category),
+    );
+    if (requiredError) return badRequest(res, requiredError);
+
+    // --- validate optional fields (only if sent) ---
+    const optionalError = firstError(
+      taxRate !== undefined ? numberValidator(taxRate, 'Tax rate', { max: 100 }) : null,
+      minStock !== undefined ? numberValidator(minStock, 'Minimum stock', { integer: true }) : null,
+      sellingPrice !== undefined ? numberValidator(sellingPrice, 'Selling price') : null,
+      costPrice !== undefined ? numberValidator(costPrice, 'Cost price') : null,
+      imageURL !== undefined ? imageURLValidator(imageURL) : null,
+      imagePublicId !== undefined ? publicIdValidator(imagePublicId) : null,
+    );
+    if (optionalError) return badRequest(res, optionalError);
 
     // Check for existing productCode
     const existingProduct = await productModel.findOne({ productCode });
@@ -289,6 +375,25 @@ const editProduct = async (req, res) => {
       imagePublicId,
     } = req.body;
 
+    // productCode identifies the product, so it is required
+    const codeError = productCodeValidator(productCode);
+    if (codeError) return badRequest(res, codeError);
+
+    // every other field is optional, but must be valid if sent
+    const optionalError = firstError(
+      productName !== undefined ? productNameValidator(productName) : null,
+      category !== undefined ? categoryNameValidator(category) : null,
+      productType !== undefined ? productTypeValidator(productType) : null,
+      taxRate !== undefined ? numberValidator(taxRate, 'Tax rate', { max: 100 }) : null,
+      minStock !== undefined ? numberValidator(minStock, 'Minimum stock', { integer: true }) : null,
+      sellingPrice !== undefined ? numberValidator(sellingPrice, 'Selling price') : null,
+      costPrice !== undefined ? numberValidator(costPrice, 'Cost price') : null,
+      // empty string is allowed for the image fields so an image can be cleared
+      imageURL !== undefined && imageURL !== '' ? imageURLValidator(imageURL) : null,
+      imagePublicId !== undefined && imagePublicId !== '' ? publicIdValidator(imagePublicId) : null,
+    );
+    if (optionalError) return badRequest(res, optionalError);
+
     const product = await productModel.findOne({ productCode });
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
@@ -336,6 +441,12 @@ const updateProductStatus = async (req, res) => {
   try {
     const { productCode, status } = req.body;
 
+    const inputError = firstError(
+      productCodeValidator(productCode),
+      productStatusValidator(status),
+    );
+    if (inputError) return badRequest(res, inputError);
+
     const product = await productModel.findOneAndUpdate({ productCode }, { status: status });
 
     if (!product) {
@@ -345,7 +456,7 @@ const updateProductStatus = async (req, res) => {
     res.status(200).json({ success: true, message: 'Product status updated successfully' });
 
   } catch (error) {
-    console.log(error);
+    console.error('Error updating product status:', error);
     res.status(500).json({ success: false, message: 'Server error while updating product status' });
   }
 };
@@ -363,6 +474,15 @@ const getProducts = async (req, res) => {
 const updateStockLevel = async (req, res) => {
   const { productCode, quantity } = req.body;
   try {
+    // quantity is an adjustment, so negative values (stock removed) are allowed
+    const inputError = firstError(
+      productCodeValidator(productCode),
+      numberValidator(quantity, 'Quantity', { min: -1000000, max: 1000000, integer: true }),
+    );
+    if (inputError) return badRequest(res, inputError);
+
+    const adjustment = Number(quantity);
+
     const product = await productModel.findOne({ productCode: productCode });
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
@@ -375,7 +495,15 @@ const updateStockLevel = async (req, res) => {
       });
     }
 
-    await productModel.findOneAndUpdate({ productCode: productCode }, { quantityInStock: product.quantityInStock + quantity });
+    const newStockLevel = product.quantityInStock + adjustment;
+    if (newStockLevel < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Stock level cannot go below zero',
+      });
+    }
+
+    await productModel.findOneAndUpdate({ productCode: productCode }, { quantityInStock: newStockLevel });
     res.status(200).json({ success: true, message: 'Stock level updated successfully' });
 
   } catch (error) {
@@ -388,6 +516,9 @@ const updateStockLevel = async (req, res) => {
 const deleteProduct = async (req, res) => {
   try {
     const { productCode } = req.body;
+
+    const codeError = productCodeValidator(productCode);
+    if (codeError) return badRequest(res, codeError);
 
     // Find the product first
     const product = await productModel.findOne({ productCode });
@@ -419,14 +550,21 @@ const deleteProduct = async (req, res) => {
 const deleteImageFromCloudinary = async (req, res) => {
   const { publicId } = req.body;
 
-  const result = await deleteImage(publicId)
+  try {
+    const publicIdError = publicIdValidator(publicId);
+    if (publicIdError) return badRequest(res, publicIdError);
 
-  if (result.success === false) {
-    return res.status(500).json({ error: result.error || result.message });
+    const result = await deleteImage(publicId)
+
+    if (result.success === false) {
+      return res.status(500).json({ error: result.error || result.message });
+    }
+
+    return res.status(200).json({ success: true, message: result.message });
+  } catch (error) {
+    console.error('Error deleting image from Cloudinary:', error);
+    return res.status(500).json({ success: false, message: 'Server error while deleting image' });
   }
-
-  return res.status(200).json({ success: true, message: result.message });
-
 }
 
 export { getProductsCashier, addProduct, editProduct, updateProductStatus, getProducts, updateStockLevel, deleteProduct, deleteImageFromCloudinary };

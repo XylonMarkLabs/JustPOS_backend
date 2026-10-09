@@ -2,6 +2,100 @@ import mongoose from "mongoose";
 import stockModel from "../models/stockModal.js";
 import stockItemModel from "../models/stockItemModal.js";
 import productModel from "../models/productModel.js";
+import {
+    codeValidator,
+    usernameValidator,
+    productIdentifierValidator,
+} from "../middleware/inputValidator.js";
+
+const badRequest = (res, message) =>
+    res.status(400).json({ success: false, message });
+
+const isNil = (v) => v === undefined || v === null || v === '';
+
+// Return the first non-null error message (or null).
+const firstError = (...errors) => errors.find(Boolean) || null;
+
+// Numeric fields. Accepts a number OR a numeric string (forms often send
+// "10.50"), but never objects/arrays/booleans.
+const numberValidator = (value, label, { min = 0, max = 1e9, integer = false } = {}) => {
+    const isNumeric =
+        typeof value === 'number' ||
+        (typeof value === 'string' && value.trim() !== '');
+    const num = isNumeric ? Number(value) : NaN;
+
+    if (!Number.isFinite(num)) {
+        return `${label} must be a valid number`;
+    }
+    if (integer && !Number.isInteger(num)) {
+        return `${label} must be a whole number`;
+    }
+    if (num < min || num > max) {
+        return `${label} must be between ${min} and ${max}`;
+    }
+    return null;
+};
+
+// Free-text fields (supplier name, invoice number, notes).
+const textValidator = (value, label, { maxLength = 100, required = true } = {}) => {
+    if (isNil(value)) {
+        return required ? `${label} is required` : null;
+    }
+    if (typeof value !== 'string') {
+        return `${label} must be a string`;
+    }
+    if (value.length > maxLength) {
+        return `${label} must be at most ${maxLength} characters`;
+    }
+    return null;
+};
+
+const dateValidator = (value, label) => {
+    if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+        return `${label} must be a valid date`;
+    }
+    return null;
+};
+
+// Validates the line items array shared by addStock and editStock.
+const itemsValidator = (items) => {
+    if (!Array.isArray(items) || items.length === 0) {
+        return 'items must be a non-empty array';
+    }
+    if (items.length > 500) {
+        return 'items contains too many entries';
+    }
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const prefix = `Item ${i + 1}`;
+
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return `${prefix} is not valid`;
+        }
+
+        const err = firstError(
+            productIdentifierValidator(item.productId),
+            numberValidator(item.quantityReceived, 'Quantity received', { min: 1, integer: true }),
+            numberValidator(item.unitCost, 'Unit cost'),
+            numberValidator(item.sellingPrice, 'Selling price'),
+        );
+        if (err) return `${prefix}: ${err}`;
+    }
+    return null;
+};
+
+// Shared header-field checks for addStock / editStock.
+const validateStockHeader = ({ stockId, supplierId, supplierName, totalPrice, receivedDate, invoiceNo, notes }) =>
+    firstError(
+        codeValidator(stockId, 'Stock ID'),
+        codeValidator(supplierId, 'Supplier ID'),
+        textValidator(supplierName, 'Supplier name'),
+        numberValidator(totalPrice, 'Total price'),
+        dateValidator(receivedDate, 'Received date'),
+        textValidator(invoiceNo, 'Invoice number', { maxLength: 60, required: false }),
+        textValidator(notes, 'Notes', { maxLength: 1000, required: false }),
+    );
 
 const buildProductFilter = (productId) => {
     if (mongoose.Types.ObjectId.isValid(productId)) {
@@ -70,6 +164,13 @@ const addStock = async (req, res) => {
             addedBy
         } = req.body;
 
+        const inputError = firstError(
+            validateStockHeader({ stockId, supplierId, supplierName, totalPrice, receivedDate, invoiceNo, notes }),
+            usernameValidator(addedBy),
+            itemsValidator(items),
+        );
+        if (inputError) return badRequest(res, inputError);
+
         // Check for existing stockId
         const existingStock = await stockModel.findOne({ stockId });
         if (existingStock) {
@@ -123,6 +224,12 @@ const editStock = async (req, res) => {
             invoiceNo,
             notes
         } = req.body;
+
+        const inputError = firstError(
+            validateStockHeader({ stockId, supplierId, supplierName, totalPrice, receivedDate, invoiceNo, notes }),
+            itemsValidator(items),
+        );
+        if (inputError) return badRequest(res, inputError);
 
         const existingStock = await stockModel.findOne({ stockId });
         if (!existingStock) {
@@ -216,7 +323,10 @@ const getStocks = async (req, res) => {
 const getStockByProduct = async (req, res) => {
     try {
         const { productId } = req.body;
-        
+
+        const productIdError = productIdentifierValidator(productId);
+        if (productIdError) return badRequest(res, productIdError);
+
         const stockItems = await stockItemModel.find({ productId: productId }).lean();
 
         res.status(200).json({ success: true, items: stockItems });
