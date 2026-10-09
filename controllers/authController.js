@@ -7,7 +7,7 @@ import { isRateLimited, logFailedAttempt, resetFailedAttempts } from '../middlew
 const COOKIE_OPTIONS = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: 'none',
     maxAge: 24 * 60 * 60 * 1000,
     path: '/',
 };
