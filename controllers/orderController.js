@@ -4,6 +4,7 @@ import discountModel from "../models/discountModel.js";
 import orderModel from "../models/orderModel.js";
 import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
+import { usernameValidator } from "../middleware/inputValidator.js";
 
 const checkoutCart = async (req, res) => {
   const session = await mongoose.startSession();
@@ -15,6 +16,12 @@ const checkoutCart = async (req, res) => {
     if (!['cash', 'card'].includes(paymentMethod)) {
       return res.status(400).json({ success: false, message: 'A valid paymentMethod is required' });
     }
+
+    const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
 
     const cart = await cartModel.findOne({ username });
     if (!cart || cart.items.length === 0) {

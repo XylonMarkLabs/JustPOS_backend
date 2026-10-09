@@ -2,12 +2,12 @@ import jwt from 'jsonwebtoken';
 import bycrypt from 'bcrypt';
 import userModel from '../models/userModel.js';
 import { usernameValidator } from '../middleware/inputValidator.js';
-import { isRateLimited, logFailedAttempt } from '../middleware/authMiddleware.js';
+import { isRateLimited, logFailedAttempt, resetFailedAttempts } from '../middleware/authMiddleware.js';
 
 const COOKIE_OPTIONS = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'none',
+    sameSite: 'strict',
     maxAge: 24 * 60 * 60 * 1000,
     path: '/',
 };
@@ -21,6 +21,14 @@ const loginUser = async (req, res) => {
     const { username, password } = req.body;
 
     try {
+        const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({
+                success: false,
+                message: usernameValidationError
+            });
+        }
         
         // Check rate limit before attempting authentication
         if (isRateLimited(username, req.ip)) {

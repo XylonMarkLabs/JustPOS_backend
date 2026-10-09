@@ -2,6 +2,60 @@ import discountModel from '../models/discountModel.js'
 import productModel from '../models/productModel.js'
 import stockItemModel from '../models/stockItemModal.js'
 import cron from 'node-cron'
+import { codeValidator, mongoIdValidator } from '../middleware/inputValidator.js'
+
+const DISCOUNT_TYPES = ['percentage', 'fixed']
+const DISCOUNT_STATUSES = ['scheduled', 'active', 'inactive', 'expired']
+
+const isNil = (v) => v === undefined || v === null || v === ''
+
+const badRequest = (res, message) =>
+    res.status(400).json({ success: false, message })
+
+// discountId looks like "DIS0001" — same shape as the other code-style IDs.
+const discountIdValidator = (discountId) =>
+    codeValidator(discountId, 'Discount ID')
+
+// Dates coming from the client must be strings that parse to a real date.
+// (An object here would otherwise end up inside the overlap query.)
+const dateValidator = (value, label) => {
+    if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+        return `${label} must be a valid date`
+    }
+    return null
+}
+
+// Type-level checks on client-sent discount fields, run BEFORE any DB lookup
+// or query uses them. With requireAll = true (add) every field must be present;
+// with requireAll = false (edit) only the fields that were sent are checked.
+// Business rules (ranges, stock limits, date order) stay in validateDiscountPayload.
+const validateDiscountFieldTypes = (
+    { discountType, discountValue, quantity, startDate, endDate },
+    requireAll
+) => {
+    const errors = []
+    const shouldCheck = (v) => requireAll || (v !== undefined && v !== null)
+
+    if (shouldCheck(discountType) && !DISCOUNT_TYPES.includes(discountType)) {
+        errors.push('discountType must be either "percentage" or "fixed"')
+    }
+    if (shouldCheck(discountValue) && (typeof discountValue !== 'number' || !Number.isFinite(discountValue))) {
+        errors.push('discountValue must be a number')
+    }
+    if (shouldCheck(quantity) && (typeof quantity !== 'number' || !Number.isInteger(quantity))) {
+        errors.push('quantity must be a whole number')
+    }
+    if (shouldCheck(startDate)) {
+        const err = dateValidator(startDate, 'startDate')
+        if (err) errors.push(err)
+    }
+    if (shouldCheck(endDate)) {
+        const err = dateValidator(endDate, 'endDate')
+        if (err) errors.push(err)
+    }
+
+    return errors
+}
 
 const generateDiscountId = async () => {
     const last = await discountModel.findOne().sort({ createdAt: -1 }).lean()
@@ -42,6 +96,8 @@ const validateDiscountPayload = ({ discountType, discountValue, quantity, startD
     }
     if (!startDate || !endDate) {
         errors.push('startDate and endDate are required')
+    } else if (Number.isNaN(new Date(startDate).getTime()) || Number.isNaN(new Date(endDate).getTime())) {
+        errors.push('startDate and endDate must be valid dates')
     } else if (new Date(startDate) >= new Date(endDate)) {
         errors.push('startDate must be before endDate')
     }
@@ -100,8 +156,24 @@ export const addDiscount = async (req, res) => {
     try {
         const { productId, stockItemId, discountType, discountValue, quantity, startDate, endDate } = req.body
 
-        if (!productId) {
-            return res.status(400).json({ success: false, message: 'productId is required' })
+        // --- validate client input before any DB lookup ---
+        if (isNil(productId)) {
+            return badRequest(res, 'productId is required')
+        }
+        const productIdError = mongoIdValidator(productId, 'productId')
+        if (productIdError) return badRequest(res, productIdError)
+
+        if (!isNil(stockItemId)) {
+            const stockItemIdError = mongoIdValidator(stockItemId, 'stockItemId')
+            if (stockItemIdError) return badRequest(res, stockItemIdError)
+        }
+
+        const typeErrors = validateDiscountFieldTypes(
+            { discountType, discountValue, quantity, startDate, endDate },
+            true
+        )
+        if (typeErrors.length) {
+            return badRequest(res, typeErrors.join(', '))
         }
 
         const product = await productModel.findOne({ _id: productId })
@@ -114,7 +186,7 @@ export const addDiscount = async (req, res) => {
         let scope
 
         if (product.productType === 'INVENTORY') {
-            if (!stockItemId) {
+            if (isNil(stockItemId)) {
                 return res.status(400).json({ success: false, message: 'stockItemId is required for inventory products' })
             }
 
@@ -178,6 +250,19 @@ export const addDiscount = async (req, res) => {
 export const editDiscount = async (req, res) => {
     try {
         const { discountId, discountType, discountValue, quantity, startDate, endDate } = req.body
+
+        // --- validate client input before any DB lookup ---
+        const discountIdError = discountIdValidator(discountId)
+        if (discountIdError) return badRequest(res, discountIdError)
+
+        // only the fields that were sent are checked (the rest fall back to stored values)
+        const typeErrors = validateDiscountFieldTypes(
+            { discountType, discountValue, quantity, startDate, endDate },
+            false
+        )
+        if (typeErrors.length) {
+            return badRequest(res, typeErrors.join(', '))
+        }
 
         const discount = await discountModel.findOne({ discountId })
         if (!discount) {
@@ -262,6 +347,9 @@ export const updateStatus = async (req, res) => {
     try {
         const { discountId, status } = req.body
 
+        const discountIdError = discountIdValidator(discountId)
+        if (discountIdError) return badRequest(res, discountIdError)
+
         if (!['active', 'inactive'].includes(status)) {
             return res.status(400).json({ success: false, message: 'status must be "active" or "inactive" (expired is set automatically)' })
         }
@@ -295,6 +383,19 @@ export const updateStatus = async (req, res) => {
 export const getAllDiscounts = async (req, res) => {
     try {
         const { status, productId, stockItemId } = req.query
+
+        // query-string values can be arrays/objects (?status[$ne]=x), so validate them too
+        if (!isNil(status) && !DISCOUNT_STATUSES.includes(status)) {
+            return badRequest(res, `status must be one of: ${DISCOUNT_STATUSES.join(', ')}`)
+        }
+        if (!isNil(productId)) {
+            const err = mongoIdValidator(productId, 'productId')
+            if (err) return badRequest(res, err)
+        }
+        if (!isNil(stockItemId)) {
+            const err = mongoIdValidator(stockItemId, 'stockItemId')
+            if (err) return badRequest(res, err)
+        }
 
         await expireStaleDiscounts()
 
@@ -342,6 +443,10 @@ export const getAllDiscounts = async (req, res) => {
 export const getDiscountById = async (req, res) => {
     try {
         const { discountId } = req.body
+
+        const discountIdError = discountIdValidator(discountId)
+        if (discountIdError) return badRequest(res, discountIdError)
+
         await expireStaleDiscounts({ discountId })
 
         const discount = await discountModel.findOne({ discountId })
@@ -359,6 +464,10 @@ export const getDiscountById = async (req, res) => {
 export const deleteDiscount = async (req, res) => {
     try {
         const { discountId } = req.body
+
+        const discountIdError = discountIdValidator(discountId)
+        if (discountIdError) return badRequest(res, discountIdError)
+
         const deleted = await discountModel.findOneAndDelete({ discountId })
         if (!deleted) {
             return res.status(404).json({ success: false, message: 'Discount not found' })
@@ -371,6 +480,8 @@ export const deleteDiscount = async (req, res) => {
 }
 
 // ---------- used internally by other controllers (e.g. cashier/cart/order) ----------
+// These take IDs that the calling controllers have already validated (or that
+// come from the database), not raw request input, so they are left unchanged.
 
 // INVENTORY: active discount (if any) for a specific stock batch.
 export const getActiveDiscountForStockItem = async (stockItemId) => {

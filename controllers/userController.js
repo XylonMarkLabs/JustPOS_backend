@@ -1,25 +1,104 @@
 import bycrypt from 'bcrypt';
 import validator from 'validator';
 import userModel from '../models/userModel.js';
-import { passwordValidator } from '../middleware/passwordValidator.js';
+import {
+    emailValidator,
+    passwordValidator,
+    usernameValidator,
+    mongoIdValidator,
+} from '../middleware/inputValidator.js';
+
+const isNil = (v) => v === undefined || v === null || v === '';
+
+// Display name: plain string, 1-100 characters.
+const nameValidator = (name) => {
+    if (typeof name !== "string" || name.trim().length === 0) {
+        return "Name is required and must be a string";
+    }
+    if (name.length > 100) {
+        return "Name must be at most 100 characters";
+    }
+    return null;
+};
+
+// Email: shared emailValidator (type check) + validator.isEmail (format check).
+// The type check MUST run first, because validator.isEmail throws on non-strings.
+const fullEmailValidator = (email) => {
+    const typeError = emailValidator(email);
+    if (typeError) return typeError;
+    if (!validator.isEmail(email)) {
+        return "Please enter a valid email address";
+    }
+    return null;
+};
+
+const roleValidator = (role) => {
+    const allowedRoles = ["Admin", "Cashier", "Manager"];
+    if (typeof role !== "string" || role.trim().length === 0) {
+        return "Role is required and must be a string";
+    }
+    if (!allowedRoles.includes(role)) {
+        return "Invalid role";
+    }
+    return null;
+};
+
+const userStatusValidator = (status) => {
+    const allowed = [0, 1];
+    if (!allowed.includes(status)) {
+        return "Status is not valid";
+    }
+    return null;
+};
+
+// Passwords being compared/hashed by bcrypt must be non-empty strings
+// (bcrypt throws on anything else). Used for the *old* password, which
+// shouldn't be re-checked against today's strength rules.
+const passwordPresenceValidator = (password, label) => {
+    if (typeof password !== "string" || password.length === 0) {
+        return `${label} is required`;
+    }
+    return null;
+};
 
 const registerUser = async (req, res) => {
     const { name, username, email, role, password } = req.body;
     try {
+        // --- validate every input first, before any DB query ---
+        const nameError = nameValidator(name);
+        if (nameError) {
+            return res.json({ success: false, message: nameError });
+        }
+
+        const emailError = fullEmailValidator(email);
+        if (emailError) {
+            return res.json({ success: false, message: emailError });
+        }
+
+        const usernameValidationError = usernameValidator(username);
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
+
+        const roleError = roleValidator(role);
+        if (roleError) {
+            return res.json({ success: false, message: roleError });
+        }
+
+        const validationError = passwordValidator(password);
+        if (validationError) {
+            return res.json({ success: false, message: validationError });
+        }
+
         // checking is user already exists
         const exists = await userModel.findOne({ email });
         if (exists) {
             return res.json({ success: false, message: "User already exists" })
         }
 
-        //validating email format and strong password
-        if (!validator.isEmail(email)) {
-            return res.json({ success: false, message: "Please enter a valid email address" })
-        }
-
-        const validationError = passwordValidator(password);
-        if (validationError) {
-            return res.json({ success: false, message: validationError });
+        const usernameExists = await userModel.findOne({ username });
+        if (usernameExists) {
+            return res.json({ success: false, message: "Username already exists" });
         }
 
         // hashing user password
@@ -47,6 +126,17 @@ const registerUser = async (req, res) => {
 const updateUserStatus = async (req, res) => {
     const { username, status } = req.body;
     try {
+        const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
+
+        const statusError = userStatusValidator(status);
+        if (statusError) {
+            return res.json({ success: false, message: statusError });
+        }
+
         const user = await userModel.findOne({ username });
 
         if (!user) {
@@ -68,24 +158,49 @@ const editUser = async (req, res) => {
     try {
         const { username, name, email, role, password } = req.body;
 
+        const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
+
+        // name / email / role are optional here, but if sent they must be valid
+        if (!isNil(name)) {
+            const nameError = nameValidator(name);
+            if (nameError) return res.json({ success: false, message: nameError });
+        }
+
+        if (!isNil(email)) {
+            const emailError = fullEmailValidator(email);
+            if (emailError) return res.json({ success: false, message: emailError });
+        }
+
+        if (!isNil(role)) {
+            const roleError = roleValidator(role);
+            if (roleError) return res.json({ success: false, message: roleError });
+        }
+
+        // password is optional; "" / missing means "leave unchanged"
+        if (!isNil(password)) {
+            const validationError = passwordValidator(password);
+            if (validationError) {
+                return res.json({ success: false, message: validationError });
+            }
+        }
+
         const user = await userModel.findOne({ username });
 
         if (!user) {
             return res.json({ success: false, message: "Invalid username" });
         }
 
-        const updateFields = {
-            name,
-            email,
-            role,
-        };
+        // only update the fields that were actually sent
+        const updateFields = {};
+        if (!isNil(name)) updateFields.name = name;
+        if (!isNil(email)) updateFields.email = email;
+        if (!isNil(role)) updateFields.role = role;
 
-        if (password) {
-            const validationError = passwordValidator(password);
-            if (validationError) {
-                return res.json({ success: false, message: validationError });
-            }
-
+        if (!isNil(password)) {
             const salt = await bycrypt.genSalt(10);
             const hashedPassword = await bycrypt.hash(password, salt);
             updateFields.password = hashedPassword;
@@ -95,7 +210,7 @@ const editUser = async (req, res) => {
 
         res.json({
             success: true,
-            message: password
+            message: !isNil(password)
                 ? "User updated with new password"
                 : "User updated successfully",
         });
@@ -111,6 +226,12 @@ const editUser = async (req, res) => {
 const deleteUser = async (req, res) => {
     try {
         const { username } = req.body;
+
+        const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
 
         const user = await userModel.findOne({ username });
 
@@ -133,6 +254,32 @@ const changePassword = async (req, res) => {
     const username = req.user.username;
 
     try {
+        const usernameValidationError = usernameValidator(username);
+
+        if (usernameValidationError) {
+            return res.json({ success: false, message: usernameValidationError });
+        }
+
+        // all three must be strings before they reach bcrypt / comparisons
+        const oldPasswordError = passwordPresenceValidator(oldPassword, "Old password");
+        if (oldPasswordError) {
+            return res.json({ success: false, message: oldPasswordError });
+        }
+
+        const confirmError = passwordPresenceValidator(confirmPassword, "Password confirmation");
+        if (confirmError) {
+            return res.json({ success: false, message: confirmError });
+        }
+
+        const validationError = passwordValidator(newPassword);
+        if (validationError) {
+            return res.json({ success: false, message: validationError });
+        }
+
+        if (newPassword !== confirmPassword) {
+            return res.json({ success: false, message: "New passwords do not match" });
+        }
+
         const user = await userModel.findOne({ username });
 
         if (!user) {
@@ -142,15 +289,6 @@ const changePassword = async (req, res) => {
         const isMatch = await bycrypt.compare(oldPassword, user.password);
         if (!isMatch) {
             return res.json({ success: false, message: "Invalid password" });
-        }
-
-        if (newPassword !== confirmPassword) {
-            return res.json({ success: false, message: "New passwords do not match" });
-        }
-
-        const validationError = passwordValidator(newPassword);
-        if (validationError) {
-            return res.json({ success: false, message: validationError });
         }
 
         // Update the password
@@ -181,8 +319,13 @@ const fetchUsers = async (req, res) => {
 const getUserById = async (req, res) => {
     const { id } = req.body;
     try {
+        const idError = mongoIdValidator(id, "User ID");
+        if (idError) {
+            return res.json({ success: false, message: idError });
+        }
+
         const user = await userModel.findById(id).select('-password');
-        if (!user) {    
+        if (!user) {
             return res.json({ success: false, message: "User not found" });
         }
         res.json({ success: true, user: user });

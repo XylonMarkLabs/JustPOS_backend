@@ -180,6 +180,11 @@ const logFailedAttempt = (identifier, ip) => {
     attempt.count++;
 };
 
+const resetFailedAttempts = (identifier, ip) => {
+    const key = `${identifier}:${ip}`;
+    rateLimiter.attempts.delete(key);
+};
+
 export {
     protect,
     optionalAuth,
@@ -187,5 +192,6 @@ export {
     isRateLimited,
     logFailedAttempt,
     requireAuth,
-    requireRole
+    requireRole,
+    resetFailedAttempts
 };

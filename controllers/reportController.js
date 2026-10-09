@@ -1,19 +1,30 @@
 import orderModel from '../models/orderModel.js'
 import { computeInventorySnapshot } from '../utils/inventorySnapshot.js'
 
+const dateValidator = (value, label) => {
+    if (typeof value !== 'string' || value.length === 0) {
+        return `${label} is required`
+    }
+    if (value.length > 40 || Number.isNaN(Date.parse(value))) {
+        return `${label} must be a valid date`
+    }
+    return null
+}
+
 export const getSalesReport = async (req, res) => {
     try {
         const { startDate, endDate } = req.query
 
-        if (!startDate || !endDate) {
-            return res.status(400).json({ success: false, message: 'startDate and endDate are required' })
+        const dateError = dateValidator(startDate, 'startDate') || dateValidator(endDate, 'endDate')
+        if (dateError) {
+            return res.status(400).json({ success: false, message: dateError })
         }
 
         const start = new Date(startDate)
         const end = new Date(endDate)
 
-        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-            return res.status(400).json({ success: false, message: 'Invalid startDate or endDate' })
+        if (start > end) {
+            return res.status(400).json({ success: false, message: 'startDate must not be after endDate' })
         }
 
         const [result] = await orderModel.aggregate([
