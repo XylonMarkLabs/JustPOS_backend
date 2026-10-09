@@ -69,4 +69,52 @@ const deleteCategory = async (req, res) => {
   }
 };
 
-export { addCategory, getCategories, updateCategoryStatus, deleteCategory };
+const editCategory = async (req, res) => {
+    try {
+        const { categoryId, categoryName, description } = req.body;
+
+        const existingCategory = await categoryModel.findOne({
+            _id: categoryId
+        });
+
+        if (!existingCategory) {
+            return res.status(404).json({
+                success: false,
+                message: "Category not found"
+            });
+        }
+
+        const duplicateCategory = await categoryModel.findOne({
+            categoryName,
+            _id: { $ne: existingCategory._id }
+        });
+
+        if (duplicateCategory) {
+            return res.status(400).json({
+                success: false,
+                message: "Category name already exists"
+            });
+        }
+
+        existingCategory.categoryName = categoryName;
+        existingCategory.description = description;
+
+        await existingCategory.save();
+
+        res.status(200).json({
+            success: true,
+            message: "Category updated successfully",
+            category: existingCategory
+        });
+
+    } catch (error) {
+        console.error("Error editing category:", error);
+
+        res.status(500).json({
+            success: false,
+            message: "Server error while editing category"
+        });
+    }
+};
+
+export { addCategory, getCategories, updateCategoryStatus, deleteCategory, editCategory };
