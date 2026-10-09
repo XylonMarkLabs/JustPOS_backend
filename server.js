@@ -15,6 +15,7 @@ import discountRouter from './routes/discountRouter.js';
 import { startDiscountStatusJob } from './controllers/discountController.js';
 import reportRouter from './routes/reportsRouter.js';
 import dashboardRouter from './routes/dashboardRouter.js';
+import setupRouter from './routes/setupRouter.js';
 
 // app config
 const app = express();
@@ -46,6 +47,7 @@ app.use("/api/stock", stockRouter);
 app.use("/api/discount", discountRouter);
 app.use("/api/report", reportRouter);
 app.use("/api/dashboard", dashboardRouter);
+app.use("/api/setup", setupRouter);
 
 app.get("/", (req,res)=>{
     res.send("API Working")
