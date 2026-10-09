@@ -10,19 +10,14 @@ import stockItemModel from "../models/stockItemModal.js";
 
 const sameStockItem = (a, b) => String(a || '') === String(b || '');
 
-// --- small local helpers built on top of the shared validators ---
-
 const isNil = (v) => v === undefined || v === null || v === '';
 
 const badRequest = (res, message) =>
   res.status(400).json({ success: false, message });
 
-// stockItemId is optional in the cart (NON_INVENTORY lines have none),
-// but if it IS sent, it must be a valid ObjectId string.
 const optionalMongoId = (value, label) =>
   isNil(value) ? null : mongoIdValidator(value, label);
 
-// Quantity must be a real integer (rejects strings like "1", objects, NaN, 1.5).
 const quantityValidator = (value, { allowZero = false } = {}) => {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return 'Quantity must be a whole number';
@@ -47,12 +42,10 @@ const addToCart = async (req, res) => {
       return badRequest(res, usernameValidationError);
     }
 
-    // product must be a plain object (not missing, not an array/string/number)
     if (!product || typeof product !== 'object' || Array.isArray(product)) {
       return badRequest(res, 'product is required');
     }
 
-    // Product lookup: productId (_id) and/or productCode. At least one is required.
     const lookupConditions = [];
 
     if (!isNil(product.productId)) {
@@ -93,7 +86,6 @@ const addToCart = async (req, res) => {
       if (err) return badRequest(res, err);
     }
 
-    // --- end validation ---
 
     const productExists = await productModel.findOne({ $or: lookupConditions });
     if (!productExists) {
