@@ -98,6 +98,10 @@ const requireAuth = async (req, res, next) => {
             return res.status(401).json({ success: false, message: 'Not authenticated' });
         }
 
+        if (!user.status) {
+            return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact an administrator for assistance.' });
+        }
+
         req.user = user;
         next();
     } catch (error) {
@@ -123,7 +127,7 @@ const rateLimiter = {
     maxAttempts: 5
 };
 
-const isRateLimited = async (identifier, ip) => {
+const isRateLimited = (identifier, ip) => {
     const key = `${identifier}:${ip}`;
     const now = Date.now();
     const attempt = rateLimiter.attempts.get(key);
@@ -152,7 +156,7 @@ const isRateLimited = async (identifier, ip) => {
     return false;
 };
 
-const logFailedAttempt = async (identifier, ip) => {
+const logFailedAttempt = (identifier, ip) => {
     const key = `${identifier}:${ip}`;
     const now = Date.now();
     const attempt = rateLimiter.attempts.get(key);
@@ -176,6 +180,11 @@ const logFailedAttempt = async (identifier, ip) => {
     attempt.count++;
 };
 
+const resetFailedAttempts = (identifier, ip) => {
+    const key = `${identifier}:${ip}`;
+    rateLimiter.attempts.delete(key);
+};
+
 export {
     protect,
     optionalAuth,
@@ -183,5 +192,6 @@ export {
     isRateLimited,
     logFailedAttempt,
     requireAuth,
-    requireRole
+    requireRole,
+    resetFailedAttempts
 };

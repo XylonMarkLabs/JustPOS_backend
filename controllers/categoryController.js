@@ -1,8 +1,39 @@
+import { categoryNameValidator } from "../middleware/inputValidator.js";
 import categoryModel from "../models/categoryModel.js";
+
+const badRequest = (res, message) =>
+    res.status(400).json({ success: false, message });
+
+const descriptionValidator = (description) => {
+    if (description === undefined || description === null) {
+        return null;
+    }
+    if (typeof description !== "string") {
+        return "Description must be a string";
+    }
+    if (description.length > 500) {
+        return "Description must be at most 500 characters";
+    }
+    return null;
+};
+
+const categoryStatusValidator = (status) => {
+    const allowed = [0, 1];
+    if (!allowed.includes(status)) {
+        return "Status is not valid";
+    }
+    return null;
+};
 
 const addCategory = async (req, res) => {
     const { categoryName, description } = req.body;
     try {
+        const categoryNameError = categoryNameValidator(categoryName);
+        if (categoryNameError) return badRequest(res, categoryNameError);
+
+        const descriptionError = descriptionValidator(description);
+        if (descriptionError) return badRequest(res, descriptionError);
+
         const existingCategory = await categoryModel.findOne({ categoryName });
         if (existingCategory) {
             return res.status(400).json({ success: false, message: "Category name already exists" });
@@ -33,6 +64,12 @@ const updateCategoryStatus = async (req, res) => {
   try {
     const { categoryName, status } = req.body;
 
+    const categoryNameError = categoryNameValidator(categoryName);
+    if (categoryNameError) return badRequest(res, categoryNameError);
+
+    const statusError = categoryStatusValidator(status);
+    if (statusError) return badRequest(res, statusError);
+
     const category = await categoryModel.findOneAndUpdate({ categoryName }, { status: status });
 
     if (!category) {
@@ -42,8 +79,8 @@ const updateCategoryStatus = async (req, res) => {
     res.status(200).json({ success: true, message: 'Category status updated successfully' });
 
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ success: false, message: 'Server error while updating product status' });
+    console.error('Error updating category status:', error);
+    res.status(500).json({ success: false, message: 'Server error while updating category status' });
   }
 };
 
@@ -51,11 +88,14 @@ const deleteCategory = async (req, res) => {
   try {
     const { categoryName } = req.body;
 
+    const categoryNameError = categoryNameValidator(categoryName);
+    if (categoryNameError) return badRequest(res, categoryNameError);
+
     // Find the category first
     const category = await categoryModel.findOne({ categoryName });
 
     if (!category) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
+      return res.status(404).json({ success: false, message: 'Category not found' });
     }
 
     // Delete the category from DB
@@ -65,7 +105,7 @@ const deleteCategory = async (req, res) => {
 
   } catch (error) {
     console.error('Error deleting category:', error);
-    res.status(500).json({ success: false, message: 'Server error while deleting product' });
+    res.status(500).json({ success: false, message: 'Server error while deleting category' });
   }
 };
 
