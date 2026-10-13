@@ -83,6 +83,18 @@ const checkoutCart = async (req, res) => {
             throw new Error(`Not enough stock left for "${cartItem.name}" — please review the cart`);
           }
 
+          const productUpdate = await productModel.findOneAndUpdate(
+            { _id: cartItem.productId, quantityInStock: { $gte: cartItem.quantity }, },
+            { $inc: { quantityInStock: -cartItem.quantity, }, },
+            { session, new: true, }
+          );
+
+          if (!productUpdate) {
+            throw new Error(
+              `Not enough product quantity available for "${cartItem.name}"`
+            );
+          }
+
           unitCost = stockUpdate.unitCost;
 
           if (cartItem.discountId) {
