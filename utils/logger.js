@@ -23,10 +23,16 @@ const scrub = (value) =>
         ? value.replace(/mongodb(\+srv)?:\/\/[^@\s/]+@/gi, 'mongodb$1://***@')
         : value;
 
+// Mongo server-selection errors attach the whole topology description (twice, as
+// `reason` and `cause`). It is pure noise in logs, so drop it.
+const isTopology = (value) => value && typeof value === 'object' && 'servers' in value;
+
 const serializeError = (err) => {
     const out = pino.stdSerializers.err(err);
     out.message = scrub(out.message);
     out.stack = scrub(out.stack);
+    if (isTopology(out.reason)) delete out.reason;
+    if (isTopology(out.cause)) delete out.cause;
     return out;
 };
 
