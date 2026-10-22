@@ -3,6 +3,7 @@ import validator from 'validator';
 import userModel from '../models/userModel.js';
 import businessModel from '../models/businessModel.js';
 import { passwordValidator, usernameValidator } from '../middleware/inputValidator.js';
+import { logger } from '../utils/logger.js';
 
 const SETUP_ALREADY_COMPLETE = 'SETUP_ALREADY_COMPLETE';
 
@@ -20,7 +21,7 @@ const checkUserExists = async (req, res) => {
                 : 'No admin user found. Setup is required.',
         });
     } catch (error) {
-        console.error('Error checking setup status:', error);
+        logger.error({ event: 'SETUP_ERROR', err: error }, 'Error checking setup status');
         return res.status(500).json({ success: false, message: 'Unable to check setup status' });
     }
 };
@@ -119,7 +120,7 @@ const registerFirstUser = async (req, res) => {
             message: 'Administrator account created successfully',
         });
     } catch (error) {
-        console.error('Error during initial setup:', error);
+        logger.error({ event: 'SETUP_ERROR', err: error }, 'Error during inital setup');
 
         // Unique-index collision (e.g. two requests racing on the same username).
         if (error.code === 11000) {

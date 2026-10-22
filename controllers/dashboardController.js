@@ -2,6 +2,7 @@ import orderModel from '../models/orderModel.js'
 import productModel from '../models/productModel.js'
 import userModel from '../models/userModel.js'
 import { computeInventorySnapshot } from '../utils/inventorySnapshot.js'
+import { logger } from '../utils/logger.js';
 
 export const getDashboardOverview = async (req, res) => {
     try {
@@ -109,7 +110,7 @@ export const getDashboardOverview = async (req, res) => {
             },
         })
     } catch (error) {
-        console.error('Error generating dashboard overview:', error)
+        logger.error({ event: 'DASHBOARD_ERROR', err: error }, 'Error generating dashboard overview');
         res.status(500).json({ success: false, message: 'Server error while generating dashboard overview' })
     }
 }

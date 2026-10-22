@@ -3,6 +3,7 @@ import productModel from '../models/productModel.js'
 import stockItemModel from '../models/stockItemModal.js'
 import cron from 'node-cron'
 import { codeValidator, mongoIdValidator } from '../middleware/inputValidator.js'
+import { logger, shouldLogOnce } from '../utils/logger.js';
 
 const DISCOUNT_TYPES = ['percentage', 'fixed']
 const DISCOUNT_STATUSES = ['scheduled', 'active', 'inactive', 'expired']
@@ -146,10 +147,13 @@ export const startDiscountStatusJob = () => {
         try {
             await expireStaleDiscounts()
         } catch (error) {
-            console.error('discount status sync job error:', error)
+            // runs every minute, so during an outage log at most once per 10 minutes
+            if (shouldLogOnce('job-failed:discount-status-sync', 10 * 60 * 1000)) {
+                logger.error({ event: 'JOB_FAILED', job: 'discount-status-sync', err: error }, 'Discount status sync job failed')
+            }
         }
     })
-    console.log('Discount status sync job started (runs every minute)')
+    logger.info({ event: 'JOB_STARTED', job: 'discount-status-sync', schedule: '* * * * *' }, 'Discount status sync job started')
 }
 
 export const addDiscount = async (req, res) => {
@@ -241,7 +245,7 @@ export const addDiscount = async (req, res) => {
 
         return res.status(201).json({ success: true, message: 'Discount created', data: discount })
     } catch (error) {
-        console.error('addDiscount error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error creating discount');
         return res.status(500).json({ success: false, message: 'Failed to create discount' })
     }
 }
@@ -337,7 +341,7 @@ export const editDiscount = async (req, res) => {
 
         return res.status(200).json({ success: true, message: 'Discount updated', data: updated })
     } catch (error) {
-        console.error('editDiscount error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error updating discount');
         return res.status(500).json({ success: false, message: 'Failed to update discount' })
     }
 }
@@ -374,7 +378,7 @@ export const updateStatus = async (req, res) => {
 
         return res.status(200).json({ success: true, message: 'Discount status updated', data: updated })
     } catch (error) {
-        console.error('updateStatus error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error updating discount status');
         return res.status(500).json({ success: false, message: 'Failed to update status' })
     }
 }
@@ -431,7 +435,7 @@ export const getAllDiscounts = async (req, res) => {
             discounts: discountsWithDetails
         })
     } catch (error) {
-        console.error('getAllDiscounts error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error fetching discount');
         return res.status(500).json({
             success: false,
             message: 'Failed to fetch discounts'
@@ -455,7 +459,7 @@ export const getDiscountById = async (req, res) => {
         }
         return res.status(200).json({ success: true, discount })
     } catch (error) {
-        console.error('getDiscountById error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error fetching discount by id');
         return res.status(500).json({ success: false, message: 'Failed to fetch discount' })
     }
 }
@@ -474,7 +478,7 @@ export const deleteDiscount = async (req, res) => {
         }
         return res.status(200).json({ success: true, message: 'Discount deleted', data: deleted })
     } catch (error) {
-        console.error('deleteDiscount error:', error)
+        logger.error({ event: 'DISCOUNT_ERROR', err: error }, 'Error deleting discount');
         return res.status(500).json({ success: false, message: 'Failed to delete discount' })
     }
 }

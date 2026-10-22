@@ -1,5 +1,6 @@
 import { categoryNameValidator } from "../middleware/inputValidator.js";
 import categoryModel from "../models/categoryModel.js";
+import { logger } from '../utils/logger.js';
 
 const badRequest = (res, message) =>
     res.status(400).json({ success: false, message });
@@ -45,7 +46,7 @@ const addCategory = async (req, res) => {
         await newCategory.save();
         res.status(201).json({ success: true, message: "Category added successfully", category: newCategory });
     } catch (error) {
-        console.error("Error adding category:", error);
+        logger.error({ event: 'CATEGORY_ERROR', err: error }, 'Error adding category');
         res.status(500).json({ success: false, message: "Server error while adding category" });
     }
 };
@@ -55,7 +56,7 @@ const getCategories = async (req, res) => {
         const categories = await categoryModel.find();
         res.status(200).json({ success: true, categories });
     } catch (error) {
-        console.error("Error fetching categories:", error);
+        logger.error({ event: 'CATEGORY_ERROR', err: error }, 'Error fetching categories');
         res.status(500).json({ success: false, message: "Server error while fetching categories" });
     }
 };
@@ -79,7 +80,7 @@ const updateCategoryStatus = async (req, res) => {
     res.status(200).json({ success: true, message: 'Category status updated successfully' });
 
   } catch (error) {
-    console.error('Error updating category status:', error);
+    logger.error({ event: 'CATEGORY_ERROR', err: error }, 'Error updating category status');
     res.status(500).json({ success: false, message: 'Server error while updating category status' });
   }
 };
@@ -104,7 +105,7 @@ const deleteCategory = async (req, res) => {
     res.status(200).json({ success: true, message: 'Category deleted successfully' });
 
   } catch (error) {
-    console.error('Error deleting category:', error);
+    logger.error({ event: 'CATEGORY_ERROR', err: error }, 'Error deleting category');
     res.status(500).json({ success: false, message: 'Server error while deleting category' });
   }
 };
@@ -148,7 +149,7 @@ const editCategory = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Error editing category:", error);
+        logger.error({ event: 'CATEGORY_ERROR', err: error }, 'Error editing category');
 
         res.status(500).json({
             success: false,

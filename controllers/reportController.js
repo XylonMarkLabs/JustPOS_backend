@@ -1,5 +1,6 @@
 import orderModel from '../models/orderModel.js'
 import { computeInventorySnapshot } from '../utils/inventorySnapshot.js'
+import { logger } from '../utils/logger.js';
 
 const dateValidator = (value, label) => {
     if (typeof value !== 'string' || value.length === 0) {
@@ -94,7 +95,7 @@ export const getSalesReport = async (req, res) => {
             },
         })
     } catch (error) {
-        console.error('Error generating sales report:', error)
+        logger.error({ event: 'REPORT_ERROR', err: error }, 'Error generating sales report');
         res.status(500).json({ success: false, message: 'Server error while generating sales report' })
     }
 }
@@ -111,7 +112,7 @@ export const getInventoryReport = async (req, res) => {
             report: isAdmin ? snapshot : rest,
         })
     } catch (error) {
-        console.error('Error generating inventory report:', error)
+        logger.error({ event: 'REPORT_ERROR', err: error }, 'Error generating inventory report');
         res.status(500).json({ success: false, message: 'Server error while generating inventory report' })
     }
 }

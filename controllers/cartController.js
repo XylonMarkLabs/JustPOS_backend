@@ -7,6 +7,7 @@ import cartModel from "../models/cartModel.js";
 import discountModel from "../models/discountModel.js";
 import productModel from "../models/productModel.js";
 import stockItemModel from "../models/stockItemModal.js";
+import { logger } from '../utils/logger.js';
 
 const sameStockItem = (a, b) => String(a || '') === String(b || '');
 
@@ -240,7 +241,7 @@ const addToCart = async (req, res) => {
       cart,
     });
   } catch (error) {
-    console.error('Error adding to cart:', error);
+    logger.error({ event: 'CART_ERROR', err: error }, 'Error adding to cart');
     res.status(500).json({ success: false, message: 'Server error while adding to cart' });
   }
 };
@@ -274,7 +275,7 @@ const removeFromCart = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Product removed from cart', cart });
   } catch (error) {
-    console.error('Error removing from cart:', error);
+    logger.error({ event: 'CART_ERROR', err: error }, 'Error removing to cart');
     res.status(500).json({ success: false, message: 'Server error while removing from cart' });
   }
 };
@@ -331,7 +332,7 @@ const getCart = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching cart:', error);
+    logger.error({ event: 'CART_ERROR', err: error }, 'Error fetching cart');
     res.status(500).json({ success: false, message: 'Server error while fetching cart' });
   }
 };
@@ -356,7 +357,7 @@ const clearCart = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Cart cleared successfully' });
   } catch (error) {
-    console.error('Error clearing cart:', error);
+    logger.error({ event: 'CART_ERROR', err: error }, 'Error clearing cart');
     res.status(500).json({ success: false, message: 'Server error while clearing cart' });
   }
 };
@@ -399,7 +400,7 @@ const updateCartQuantity = async (req, res) => {
     await cart.save();
     res.status(200).json({ success: true, message: 'Cart updated successfully', cart });
   } catch (error) {
-    console.error('Error updating cart quantity:', error);
+    logger.error({ event: 'CART_ERROR', err: error }, 'Error updating cart quantity');
     res.status(500).json({ success: false, message: 'Server error while updating cart quantity' });
   }
 };

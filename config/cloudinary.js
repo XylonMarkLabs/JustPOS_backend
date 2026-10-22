@@ -1,4 +1,5 @@
 import { v2 as cloudinary } from 'cloudinary'
+import { logger } from '../utils/logger.js';
 
 cloudinary.config({
     cloud_name: process.env.CLOUD_NAME,
@@ -12,7 +13,7 @@ export const deleteImage = async (publicId) => {
     try {
         const result = await cloudinary.uploader.destroy(publicId)
         if (result.result === 'ok') {
-            console.log('Image deleted successfully:', publicId);
+            logger.debug({ event: 'IMAGE_DELETED', publicId }, 'Image deleted from Cloudinary');
             return { success: true, message: 'Image deleted successfully' };
         } else {
             return { success: false, message: 'Image not found or failed to delete' };

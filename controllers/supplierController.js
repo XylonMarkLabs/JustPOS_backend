@@ -1,6 +1,7 @@
 import validator from "validator";
 import supplierModel from "../models/supplierModal.js";
 import { codeValidator, emailValidator } from "../middleware/inputValidator.js";
+import { logger } from '../utils/logger.js';
 
 const badRequest = (res, message) =>
     res.status(400).json({ success: false, message });
@@ -98,7 +99,7 @@ const addSupplier = async (req, res) => {
         res.status(201).json({ success: true, message: 'Supplier added successfully', supplier: newSupplier });
 
     } catch (error) {
-        console.error('Error adding supplier:', error);
+        logger.error({ event: 'SUPPLIER_ERROR', err: error }, 'Error adding supplier');
         res.status(500).json({ success: false, message: 'Server error while adding supplier' });
     }
 };
@@ -141,7 +142,7 @@ const editSupplier = async (req, res) => {
         res.status(201).json({ success: true, message: 'Supplier edited successfully' });
 
     } catch (error) {
-        console.error('Error editing supplier:', error);
+        logger.error({ event: 'SUPPLIER_ERROR', err: error }, 'Error editing supplier');
         res.status(500).json({ success: false, message: 'Server error while editing supplier' });
     }
 };
@@ -165,7 +166,7 @@ const updateSupplierStatus = async (req, res) => {
         res.status(200).json({ success: true, message: 'Supplier status updated successfully' });
 
     } catch (error) {
-        console.error('Error updating supplier status:', error);
+        logger.error({ event: 'SUPPLIER_ERROR', err: error }, 'Error updating supplier status');
         res.status(500).json({ success: false, message: 'Server error while updating supplier status' });
     }
 };
@@ -175,7 +176,7 @@ const getSuppliers = async (req, res) => {
         const suppliers = await supplierModel.find({});
         res.status(200).json({ success: true, suppliers });
     } catch (error) {
-        console.error('Error fetching suppliers:', error);
+        logger.error({ event: 'SUPPLIER_ERROR', err: error }, 'Error fetching supplier');
         res.status(500).json({ success: false, message: 'Server error while fetching suppliers' });
     }
 };
