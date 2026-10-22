@@ -7,6 +7,7 @@ import {
     usernameValidator,
     productIdentifierValidator,
 } from "../middleware/inputValidator.js";
+import { logger } from "../utils/logger.js";
 
 const badRequest = (res, message) =>
     res.status(400).json({ success: false, message });
@@ -15,6 +16,31 @@ const isNil = (v) => v === undefined || v === null || v === '';
 
 // Return the first non-null error message (or null).
 const firstError = (...errors) => errors.find(Boolean) || null;
+
+// The acting user comes from requireAuth (server-side), never from the request body.
+const actorOf = (req) => String(req.user._id);
+
+// Only log ids that match the shape the validators allow.
+const safeId = (value) =>
+    typeof value === 'string' && /^[a-zA-Z0-9_-]{1,60}$/.test(value) ? value : null;
+
+const LOG_PRODUCT_LIMIT = 50; // cap so one huge stock receipt can't create a giant log line
+
+const invalid = (req, res, operation, message) => {
+    logger.warn(
+        { event: 'STOCK_VALIDATION_FAILED', operation, detail: message, actorUserId: actorOf(req) },
+        'Stock request failed validation'
+    );
+    return badRequest(res, message);
+};
+
+const rejected = (req, res, operation, reason, message, status, extra = {}) => {
+    logger.warn(
+        { event: 'STOCK_OPERATION_REJECTED', operation, reason, actorUserId: actorOf(req), ...extra },
+        'Stock operation rejected'
+    );
+    return res.status(status).json({ success: false, message });
+};
 
 // Numeric fields. Accepts a number OR a numeric string (forms often send
 // "10.50"), but never objects/arrays/booleans.
@@ -104,15 +130,102 @@ const buildProductFilter = (productId) => {
     return { productCode: productId };
 };
 
-const applyStockToProducts = async (items) => {
-    await Promise.all(
-        items.map((item) =>
-            productModel.findOneAndUpdate(
+const applyStockToProducts = async (items) =>
+    Promise.all(
+        items.map(async (item) => {
+            const product = await productModel.findOneAndUpdate(
                 buildProductFilter(item.productId),
-                { $inc: { quantityInStock: item.quantityReceived } }
-            )
-        )
+                { $inc: { quantityInStock: item.quantityReceived } },
+                { new: true }
+            );
+            return {
+                identifier: String(item.productId),
+                quantityChange: Number(item.quantityReceived),
+                product,
+            };
+        })
     );
+
+const applyStockAdjustments = async (previousItems, updatedItems) => {
+    const previousTotals = sumQuantitiesByProduct(previousItems);
+    const updatedTotals = sumQuantitiesByProduct(updatedItems);
+
+    const productIds = new Set([
+        ...previousTotals.keys(),
+        ...updatedTotals.keys(),
+    ]);
+
+    const results = await Promise.all(
+        Array.from(productIds).map(async (productId) => {
+            const delta =
+                (updatedTotals.get(productId) || 0) -
+                (previousTotals.get(productId) || 0);
+
+            if (delta === 0) return null;
+
+            const product = await productModel.findOneAndUpdate(
+                buildProductFilter(productId),
+                { $inc: { quantityInStock: delta } },
+                { new: true }
+            );
+            return { identifier: String(productId), quantityChange: delta, product };
+        })
+    );
+
+    return results.filter(Boolean);
+};
+
+// Compact, safe description of what happened to each product (ids and numbers only).
+const describeUpdates = (results) =>
+    results.slice(0, LOG_PRODUCT_LIMIT).map((r) =>
+        r.product
+            ? {
+                productId: String(r.product._id),
+                productCode: r.product.productCode,
+                quantityChange: r.quantityChange,
+                resultingQuantity: r.product.quantityInStock,
+            }
+            : { identifier: r.identifier, quantityChange: r.quantityChange, resultingQuantity: null }
+    );
+
+// Logs problems found while applying quantities to products:
+//  - stock lines that point at a product that does not exist (an inconsistency)
+//  - products whose quantity just CROSSED down to/below their minimum (an actual state change)
+const reportProductUpdates = (results, source, context) => {
+    const missing = results.filter((r) => !r.product);
+    if (missing.length > 0) {
+        logger.warn(
+            {
+                event: 'STOCK_PRODUCT_NOT_FOUND',
+                source,
+                ...context,
+                missingProducts: missing.slice(0, LOG_PRODUCT_LIMIT).map((m) => m.identifier),
+            },
+            'Stock lines reference products that do not exist'
+        );
+    }
+
+    for (const r of results) {
+        if (!r.product || r.quantityChange >= 0) continue; // only reductions can cross downward
+        const resulting = r.product.quantityInStock;
+        const previous = resulting - r.quantityChange;
+        const minStock = r.product.minStock || 0;
+        if (previous > minStock && resulting <= minStock) {
+            logger.warn(
+                {
+                    event: 'LOW_STOCK_DETECTED',
+                    source,
+                    ...context,
+                    productId: String(r.product._id),
+                    productCode: r.product.productCode,
+                    resultingQuantity: resulting,
+                    minStock,
+                    outOfStock: resulting === 0,
+                },
+                'Product stock fell to or below its minimum'
+            );
+        }
+    }
 };
 
 const sumQuantitiesByProduct = (items = []) => {
@@ -125,32 +238,10 @@ const sumQuantitiesByProduct = (items = []) => {
     return totals;
 };
 
-const applyStockAdjustments = async (previousItems, updatedItems) => {
-    const previousTotals = sumQuantitiesByProduct(previousItems);
-    const updatedTotals = sumQuantitiesByProduct(updatedItems);
-
-    const productIds = new Set([
-        ...previousTotals.keys(),
-        ...updatedTotals.keys(),
-    ]);
-
-    await Promise.all(
-        Array.from(productIds).map((productId) => {
-            const delta =
-                (updatedTotals.get(productId) || 0) -
-                (previousTotals.get(productId) || 0);
-
-            if (delta === 0) return Promise.resolve();
-
-            return productModel.findOneAndUpdate(
-                buildProductFilter(productId),
-                { $inc: { quantityInStock: delta } }
-            );
-        })
-    );
-};
-
 const addStock = async (req, res) => {
+    const actorUserId = actorOf(req);
+    let stage = 'validation';
+
     try {
         const {
             stockId,
@@ -160,21 +251,21 @@ const addStock = async (req, res) => {
             totalPrice,
             receivedDate,
             invoiceNo,
-            notes,
-            addedBy
+            notes
         } = req.body;
+
+        const addedBy = req.user.username;
 
         const inputError = firstError(
             validateStockHeader({ stockId, supplierId, supplierName, totalPrice, receivedDate, invoiceNo, notes }),
-            usernameValidator(addedBy),
             itemsValidator(items),
         );
-        if (inputError) return badRequest(res, inputError);
+        if (inputError) return invalid(req, res, 'add', inputError);
 
         // Check for existing stockId
         const existingStock = await stockModel.findOne({ stockId });
         if (existingStock) {
-            return res.status(400).json({ success: false, message: 'Stock ID already exists' });
+            return rejected(req, res, 'add', 'DUPLICATE_STOCK_ID', 'Stock ID already exists', 400, { stockId });
         }
 
         const newStock = new stockModel({
@@ -189,6 +280,7 @@ const addStock = async (req, res) => {
         });
 
         await newStock.save();
+        stage = 'stock_record_saved';
 
         // Save each line item into the stockItems collection
         const stockItemDocs = items.map((item) => ({
@@ -200,19 +292,50 @@ const addStock = async (req, res) => {
             sellingPrice: item.sellingPrice,
         }));
         await stockItemModel.insertMany(stockItemDocs);
+        stage = 'stock_items_saved';
 
         // Update each product's current stock level with the quantity received
-        await applyStockToProducts(items);
+        const productResults = await applyStockToProducts(items);
+        stage = 'products_updated';
+
+        // ONE event for the whole receipt (not one per internal step).
+        logger.info(
+            {
+                event: 'STOCK_ADDED',
+                actorUserId,
+                stockId,
+                supplierId,
+                itemCount: items.length,
+                totalQuantity: items.reduce((sum, item) => sum + Number(item.quantityReceived), 0),
+                products: describeUpdates(productResults),
+            },
+            'Stock received'
+        );
+        reportProductUpdates(productResults, 'stock_add', { actorUserId, stockId });
 
         res.status(201).json({ success: true, message: 'Stock added successfully', stock: newStock });
 
     } catch (error) {
-        console.error('Error adding stock:', error);
+        logger.error(
+            {
+                event: 'STOCK_ADD_FAILED',
+                actorUserId,
+                stockId: safeId(req.body?.stockId),
+                stage,
+                // stock record / items written but product quantities not updated yet
+                possiblyInconsistent: stage === 'stock_record_saved' || stage === 'stock_items_saved',
+                err: error,
+            },
+            'Unexpected error adding stock'
+        );
         res.status(500).json({ success: false, message: 'Server error while adding stock' });
     }
 };
 
 const editStock = async (req, res) => {
+    const actorUserId = actorOf(req);
+    let stage = 'validation';
+
     try {
         const {
             stockId,
@@ -229,11 +352,11 @@ const editStock = async (req, res) => {
             validateStockHeader({ stockId, supplierId, supplierName, totalPrice, receivedDate, invoiceNo, notes }),
             itemsValidator(items),
         );
-        if (inputError) return badRequest(res, inputError);
+        if (inputError) return invalid(req, res, 'edit', inputError);
 
         const existingStock = await stockModel.findOne({ stockId });
         if (!existingStock) {
-            return res.status(404).json({ success: false, message: 'Stock record not found' });
+            return rejected(req, res, 'edit', 'STOCK_NOT_FOUND', 'Stock record not found', 404, { stockId });
         }
 
         const previousItems = await stockItemModel.find({ stockId });
@@ -246,8 +369,11 @@ const editStock = async (req, res) => {
             invoiceNo,
             notes
         });
+        stage = 'header_updated';
 
         await stockItemModel.deleteMany({ stockId });
+        stage = 'items_deleted';
+
         const stockItemDocs = items.map((item) => ({
             stockId,
             productId: item.productId,
@@ -257,13 +383,39 @@ const editStock = async (req, res) => {
             sellingPrice: item.sellingPrice,
         }));
         await stockItemModel.insertMany(stockItemDocs);
+        stage = 'items_inserted';
 
-        await applyStockAdjustments(previousItems, items);
+        const productResults = await applyStockAdjustments(previousItems, items);
+        stage = 'products_adjusted';
+
+        logger.info(
+            {
+                event: 'STOCK_EDITED',
+                actorUserId,
+                stockId,
+                itemCount: items.length,
+                productsAdjusted: productResults.length,
+                products: describeUpdates(productResults),
+            },
+            'Stock record edited'
+        );
+        reportProductUpdates(productResults, 'stock_edit', { actorUserId, stockId });
 
         res.status(201).json({ success: true, message: 'Stock record edited successfully' });
 
     } catch (error) {
-        console.error('Error editing stock:', error);
+        logger.error(
+            {
+                event: 'STOCK_EDIT_FAILED',
+                actorUserId,
+                stockId: safeId(req.body?.stockId),
+                stage,
+                // anything after the first write and before the products were adjusted
+                possiblyInconsistent: ['header_updated', 'items_deleted', 'items_inserted'].includes(stage),
+                err: error,
+            },
+            'Unexpected error editing stock'
+        );
         res.status(500).json({ success: false, message: 'Server error while editing stock' });
     }
 };
@@ -315,7 +467,7 @@ const getStocks = async (req, res) => {
 
         res.status(200).json({ success: true, stocks: stocksWithItems });
     } catch (error) {
-        console.error('Error fetching stock records:', error);
+        logger.error({ event: 'STOCK_QUERY_ERROR', operation: 'getStocks', err: error }, 'Error fetching stock records');
         res.status(500).json({ success: false, message: 'Server error while fetching stock records' });
     }
 };
@@ -332,7 +484,7 @@ const getStockByProduct = async (req, res) => {
         res.status(200).json({ success: true, items: stockItems });
 
     } catch (error) {
-        console.error('Error fetching stock by product:', error);
+        logger.error({ event: 'STOCK_QUERY_ERROR', operation: 'getStockByProduct', err: error }, 'Error fetching stock by product');
         res.status(500).json({ success: false, message: 'Server error while fetching stock by product' });
     }
 }
